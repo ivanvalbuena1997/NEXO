@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mismos valores que el tema oscuro de V.I.T.A. (css/vita.css). -->
+    <color name="nexo_bg">#05080C</color>
+    <color name="nexo_acc">#3FE0FF</color>
+    <color name="nexo_icon_bg">#05080C</color>
+</resources>

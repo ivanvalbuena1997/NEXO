@@ -1,0 +1,79 @@
+name: Compilar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.1.0"
+
+      - name: Comprobar clave de firma
+        id: firma
+        env:
+          KS_B64: ${{ secrets.NEXO_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.NEXO_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ]; then
+            echo "::warning title=Sin clave de firma::Faltan los Secrets NEXO_KEYSTORE_B64 y/o NEXO_KEYSTORE_PASSWORD. Solo se comprueba que compila; no se publica APK."
+            echo "hay=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/nexo.p12"
+            echo "hay=si" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pruebas y compilación
+        env:
+          NEXO_KEYSTORE_FILE: ${{ steps.firma.outputs.hay == 'si' && format('{0}/nexo.p12', runner.temp) || '' }}
+          NEXO_KEYSTORE_PASSWORD: ${{ secrets.NEXO_KEYSTORE_PASSWORD }}
+        run: |
+          set -o pipefail
+          if [ "${{ steps.firma.outputs.hay }}" = "si" ]; then TAREA=assembleRelease; else TAREA=assembleDebug; fi
+          gradle --no-daemon testDebugUnitTest "$TAREA" 2>&1 | tee build.log
+
+      - name: Errores de compilación como anotaciones
+        if: failure()
+        run: |
+          [ -f build.log ] || exit 0
+          resumen=$(grep -E -A6 '^e: |What went wrong|FAILED$|error:|expected:<' build.log | head -n 80)
+          [ -n "$resumen" ] || resumen=$(tail -n 60 build.log)
+          resumen="${resumen//'%'/'%25'}"
+          resumen="${resumen//$'\r'/}"
+          resumen="${resumen//$'\n'/'%0A'}"
+          echo "::error title=Gradle::${resumen}"
+
+      - name: Publicar APK en Releases
+        if: steps.firma.outputs.hay == 'si'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          APK="NEXO-$VERSION.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          echo "SHA-1 del certificado de firma:"
+          keytool -printcert -jarfile "$APK" | grep -E 'SHA1|SHA-1' || true
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            gh release upload "v$VERSION" "$APK" --clobber
+          else
+            gh release create "v$VERSION" "$APK" --title "NEXO $VERSION" --notes "APK firmado de NEXO $VERSION. Instálalo a mano en el móvil."
+          fi
+          echo "::notice title=APK publicado::$APK en la release v$VERSION"
