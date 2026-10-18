@@ -41,13 +41,38 @@ jobs:
             echo "hay=si" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Configuración de Firebase
+        id: firebase
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "::warning title=Sin google-services.json::Falta el Secret GOOGLE_SERVICES_JSON. Se compila con una configuración de prueba solo para comprobar el código; no se publica APK."
+            cp ci/google-services-prueba.json app/google-services.json
+            echo "real=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("app/google-services.json"))
+          apps = [c for c in d.get("client", []) if c["client_info"]["android_client_info"]["package_name"] == "com.nexo.vita"]
+          if not apps:
+              print("::error title=google-services.json::No contiene la app com.nexo.vita"); raise SystemExit(1)
+          web = [o for o in apps[0].get("oauth_client", []) if o.get("client_type") == 3]
+          if not web:
+              print("::error title=google-services.json::No contiene el cliente web de OAuth (client_type 3). Comprueba que Google está activado en Authentication y que la huella SHA-1 está añadida, y vuelve a descargar el archivo."); raise SystemExit(1)
+          print("google-services.json correcto: proyecto", d["project_info"]["project_id"])
+          PY
+          echo "real=si" >> "$GITHUB_OUTPUT"
+
       - name: Pruebas y compilación
         env:
           NEXO_KEYSTORE_FILE: ${{ steps.firma.outputs.hay == 'si' && format('{0}/nexo.p12', runner.temp) || '' }}
           NEXO_KEYSTORE_PASSWORD: ${{ secrets.NEXO_KEYSTORE_PASSWORD }}
         run: |
           set -o pipefail
-          if [ "${{ steps.firma.outputs.hay }}" = "si" ]; then TAREA=assembleRelease; else TAREA=assembleDebug; fi
+          if [ "${{ steps.firma.outputs.hay }}" = "si" ] && [ "${{ steps.firebase.outputs.real }}" = "si" ]; then TAREA=assembleRelease; else TAREA=assembleDebug; fi
           gradle --no-daemon testDebugUnitTest "$TAREA" 2>&1 | tee build.log
 
       - name: Errores de compilación como anotaciones
@@ -62,7 +87,7 @@ jobs:
           echo "::error title=Gradle::${resumen}"
 
       - name: Publicar APK en Releases
-        if: steps.firma.outputs.hay == 'si'
+        if: steps.firma.outputs.hay == 'si' && steps.firebase.outputs.real == 'si'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

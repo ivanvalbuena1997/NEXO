@@ -42,6 +42,12 @@ class MainActivity : ComponentActivity() {
     private val documentosAbiertos = mutableSetOf<LocalDate>()
     private var trabajo: Job? = null
 
+    private lateinit var cuenta: Cuenta
+    private var mensajeCuenta: String? = null
+    private var sincronizando = false
+    private var ultimaSync: Sincronizador.Resultado? = null
+    private val fmtSync = DateTimeFormatter.ofPattern("EEE d/M 'a las' HH:mm", es)
+
     private val pedirPermisos = registerForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { actualizar() }
@@ -49,6 +55,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         hud = Hud(this)
+        cuenta = Cuenta(this)
+        ultimaSync = Sincronizador.ultimo(this)
 
         contenido = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -114,6 +122,7 @@ class MainActivity : ComponentActivity() {
         contenido.removeAllViews()
         contenido.addView(cabecera())
         contenido.addView(tarjetaEstado())
+        if (client != null) contenido.addView(tarjetaSincronizacion())
         if (client != null && concedidos.any { it in LectorHealthConnect.PERMISOS }) {
             contenido.addView(tarjetaLectura())
             dias.forEach { contenido.addView(tarjetaDia(it)) }
@@ -166,6 +175,71 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun tarjetaSincronizacion(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("V.I.T.A."))
+
+        val usuario = cuenta.usuario
+        addView(hud.fila(
+            "Cuenta",
+            usuario?.email ?: "Sin iniciar sesión",
+            if (usuario != null) Hud.OK else Hud.WARN,
+        ))
+        mensajeCuenta?.let { addView(hud.texto(it, 14f, Hud.BAD).apply { setPadding(0, hud.dp(4), 0, 0) }) }
+
+        val s = ultimaSync
+        addView(hud.fila(
+            "Última sincronización",
+            s?.cuando?.format(fmtSync)?.replaceFirstChar { it.titlecase(es) } ?: "Nunca",
+            when (s?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE },
+        ))
+        if (s != null) {
+            addView(hud.texto(s.texto, 14f, if (s.ok) Hud.DIM else Hud.BAD).apply {
+                setPadding(0, hud.dp(2), 0, 0)
+            })
+        }
+
+        if (usuario == null) {
+            addView(hud.boton("Iniciar sesión con Google") { iniciarSesion() })
+        } else {
+            val listo = concedidos.containsAll(LectorHealthConnect.PERMISOS)
+            addView(hud.boton(if (sincronizando) "Sincronizando…" else "Sincronizar ahora") {
+                if (!sincronizando && listo) sincronizar()
+            }.apply { alpha = if (listo && !sincronizando) 1f else 0.5f })
+            if (!listo) addView(hud.texto("Concede antes los permisos de pasos y sueño.", 13f, Hud.WARN))
+            addView(hud.texto(
+                "Escribe ayer y hoy en V.I.T.A. Lo que hayas corregido a mano en V.I.T.A. no se toca.",
+                13f, Hud.MUTE,
+            ).apply { setPadding(0, hud.dp(6), 0, 0) })
+            addView(hud.boton("Cerrar sesión", principal = false) { cerrarSesion() })
+        }
+    }
+
+    private fun iniciarSesion() {
+        lifecycleScope.launch {
+            mensajeCuenta = cuenta.iniciarSesion()
+            pintar()
+        }
+    }
+
+    private fun cerrarSesion() {
+        lifecycleScope.launch {
+            cuenta.cerrarSesion()
+            mensajeCuenta = null
+            pintar()
+        }
+    }
+
+    private fun sincronizar() {
+        val c = client ?: return
+        sincronizando = true
+        pintar()
+        lifecycleScope.launch {
+            ultimaSync = Sincronizador(this@MainActivity).sincronizar(c)
+            sincronizando = false
+            actualizar() // vuelve a leer y repinta
+        }
+    }
+
     private fun filaPermiso(clave: String, permiso: String): View {
         val ok = permiso in concedidos
         return hud.fila(clave, if (ok) "Concedido" else "Sin conceder", if (ok) Hud.OK else Hud.WARN)
@@ -174,7 +248,7 @@ class MainActivity : ComponentActivity() {
     private fun tarjetaLectura(): View = hud.tarjeta().apply {
         addView(hud.etiqueta("Lectura de Health Connect"))
         addView(hud.texto(
-            "Solo lectura: NEXO 0.1 no escribe nada en Firestore. Compara estos datos con los de Mi Fitness.",
+            "Lo que hay ahora en Health Connect. «Leer ahora» solo lee; para guardarlo en V.I.T.A. usa «Sincronizar ahora».",
             14f, Hud.DIM,
         ))
         addView(hud.fila("Última lectura", ultimaLectura ?: "—"))

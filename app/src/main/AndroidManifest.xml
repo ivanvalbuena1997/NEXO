@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Health Connect: solo lectura de pasos y sueño (0.1). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Health Connect: solo lectura de pasos y sueño. -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
 

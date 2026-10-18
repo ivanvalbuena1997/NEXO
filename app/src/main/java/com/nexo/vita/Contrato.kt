@@ -1,49 +1,96 @@
 package com.nexo.vita
 
 import org.json.JSONObject
+import java.time.ZonedDateTime
 
 /**
- * Documento que NEXO escribiría en users/{uid}/dias/{AAAA-MM-DD} según el contrato
- * de datos con V.I.T.A. En la 0.1 solo se muestra: no se escribe nada.
+ * Contrato de datos con V.I.T.A.: documento users/{uid}/dias/{AAAA-MM-DD}.
  *
- * Reglas reflejadas aquí: sin datos → el campo no aparece (nunca 0);
- * `fases` solo si Health Connect trae fases.
- * Las reglas de escritura (merge, respetar "manual", borrar y reescribir `sueno`
- * en el mismo lote) se aplicarán en la 0.2, al escribir en Firestore.
+ * Reglas:
+ * - Escribir SIEMPRE con merge y solo estos campos (V.I.T.A. guarda más cosas en el documento).
+ * - Sin datos en Health Connect → el campo no se escribe (nunca 0).
+ * - `pasosFuente == "manual"` → no tocar `pasos`; `sueno.fuente == "manual"` → no tocar `sueno`.
+ * - `sueno` es un mapa: se borra y se reescribe en el mismo lote (ver [Sincronizador]).
  */
 object Contrato {
     const val FUENTE = "health-connect"
+    const val MANUAL = "manual"
 
+    enum class Estado { ESCRITO, MANUAL, SIN_DATOS }
+
+    /** Lo que hay que escribir en un día. `datos` vacío = no se escribe nada. */
+    data class Plan(
+        val datos: Map<String, Any>,
+        val borrarSueno: Boolean,
+        val pasos: Estado,
+        val sueno: Estado,
+    ) {
+        val escribe: Boolean get() = datos.isNotEmpty()
+    }
+
+    fun mapaPasos(dia: Dia): Map<String, Any>? =
+        dia.pasos.total?.let { mapOf("pasos" to it, "pasosFuente" to FUENTE) }
+
+    fun mapaSueno(dia: Dia): Map<String, Any>? {
+        val sueno = dia.sueno ?: return null
+        val principal = sueno.principal ?: return null
+        val m = linkedMapOf<String, Any>(
+            "min" to sueno.min,
+            "inicio" to isoLocal(principal.inicio),
+            "fin" to isoLocal(principal.fin),
+        )
+        sueno.fases?.let { f ->
+            m["fases"] = linkedMapOf(
+                "profundo" to f.profundo,
+                "ligero" to f.ligero,
+                "rem" to f.rem,
+                "despierto" to f.despierto,
+            )
+        }
+        m["sesiones"] = sueno.sesiones.size
+        m["fuente"] = FUENTE
+        return m
+    }
+
+    /**
+     * Decide qué escribir comparando lo leído de Health Connect con el documento actual
+     * de Firestore ([existente], null si no existe).
+     */
+    fun plan(dia: Dia, existente: Map<String, Any?>?, ahora: ZonedDateTime): Plan {
+        val pasosManual = existente?.get("pasosFuente") == MANUAL
+        val suenoManual = (existente?.get("sueno") as? Map<*, *>)?.get("fuente") == MANUAL
+
+        val pasos = mapaPasos(dia)
+        val sueno = mapaSueno(dia)
+
+        val estPasos = when {
+            pasosManual -> Estado.MANUAL
+            pasos == null -> Estado.SIN_DATOS
+            else -> Estado.ESCRITO
+        }
+        val estSueno = when {
+            suenoManual -> Estado.MANUAL
+            sueno == null -> Estado.SIN_DATOS
+            else -> Estado.ESCRITO
+        }
+
+        val datos = linkedMapOf<String, Any>()
+        if (estPasos == Estado.ESCRITO) datos.putAll(pasos!!)
+        if (estSueno == Estado.ESCRITO) datos["sueno"] = sueno!!
+        if (datos.isNotEmpty()) {
+            datos["fecha"] = dia.fecha.toString()
+            datos["sincronizado"] = isoLocal(ahora)
+        }
+        return Plan(datos, borrarSueno = estSueno == Estado.ESCRITO, estPasos, estSueno)
+    }
+
+    /** Vista previa en pantalla: lo que se escribiría si no hubiera nada marcado como manual. */
     fun documento(dia: Dia): JSONObject {
         val doc = JSONObject()
         doc.put("fecha", dia.fecha.toString())
-
-        dia.pasos.total?.let { pasos ->
-            doc.put("pasos", pasos)
-            doc.put("pasosFuente", FUENTE)
-        }
-
-        val sueno = dia.sueno
-        val principal = sueno?.principal
-        if (sueno != null && principal != null) {
-            val s = JSONObject()
-            s.put("min", sueno.min)
-            s.put("inicio", isoLocal(principal.inicio))
-            s.put("fin", isoLocal(principal.fin))
-            sueno.fases?.let { f ->
-                s.put("fases", JSONObject().apply {
-                    put("profundo", f.profundo)
-                    put("ligero", f.ligero)
-                    put("rem", f.rem)
-                    put("despierto", f.despierto)
-                })
-            }
-            s.put("sesiones", sueno.sesiones.size)
-            s.put("fuente", FUENTE)
-            doc.put("sueno", s)
-        }
-
-        doc.put("sincronizado", "(se añade al escribir)")
+        mapaPasos(dia)?.forEach { (k, v) -> doc.put(k, v) }
+        mapaSueno(dia)?.let { doc.put("sueno", JSONObject(it)) }
+        doc.put("sincronizado", "(hora de la sincronización)")
         return doc
     }
 }

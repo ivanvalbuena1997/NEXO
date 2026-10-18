@@ -26,9 +26,8 @@ class PermissionsRationaleActivity : ComponentActivity() {
                     "NEXO lee de Health Connect tus pasos y tu sueño (con sus fases) para llevarlos " +
                         "a tu cuenta de V.I.T.A. No lee ningún otro dato, no escribe en Health Connect " +
                         "y no comparte nada con terceros.\n\n" +
-                        "En la versión 0.1 los datos solo se muestran en pantalla. A partir de la 0.2 se " +
-                        "guardarán en tu base de datos de Firebase (proyecto de V.I.T.A.), accesible solo " +
-                        "con tu cuenta de Google.\n\n" +
+                        "Los datos se guardan en tu base de datos de Firebase (proyecto de V.I.T.A.), " +
+                        "accesible solo con tu cuenta de Google.\n\n" +
                         "Puedes retirar los permisos cuando quieras en Health Connect.",
                     15f, Hud.DIM,
                 ))
