@@ -1,6 +1,7 @@
 package com.nexo.vita
 
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -25,6 +26,8 @@ data class SesionSueno(
     val fin: ZonedDateTime,
     val origen: String,
     val tramos: List<Tramo>,
+    /** Última modificación del registro en Health Connect (para quedarse con la versión más reciente). */
+    val modificado: Instant = Instant.EPOCH,
 ) {
     val duracionSeg: Long get() = Duration.between(inicio, fin).seconds
     val conFases: Boolean get() = tramos.isNotEmpty()
@@ -45,8 +48,15 @@ data class SesionSueno(
 /** Fases del contrato, en minutos. */
 data class FasesMin(val profundo: Long, val ligero: Long, val rem: Long, val despierto: Long)
 
-/** El sueño de un día: todas las sesiones que TERMINAN ese día (hora de España). */
-data class SuenoDia(val fecha: LocalDate, val sesiones: List<SesionSueno>) {
+/**
+ * El sueño de un día: las sesiones que TERMINAN ese día (hora de España), ya sin solapes.
+ * [descartadas]: sesiones que se solapaban con otra y no cuentan (solo para mostrar).
+ */
+data class SuenoDia(
+    val fecha: LocalDate,
+    val sesiones: List<SesionSueno>,
+    val descartadas: List<SesionSueno> = emptyList(),
+) {
     /** Minutos dormido sumando todas las sesiones (siestas incluidas). */
     val min: Long get() = aMinutos(sesiones.sumOf { it.dormidoSeg })
 
@@ -67,11 +77,50 @@ data class SuenoDia(val fecha: LocalDate, val sesiones: List<SesionSueno>) {
         }
 
     companion object {
-        /** Agrupa sesiones por la fecha local (España) en la que terminan. */
-        fun agrupar(sesiones: List<SesionSueno>): Map<LocalDate, SuenoDia> =
-            sesiones
+        /**
+         * Quita solapes y agrupa por la fecha local (España) en la que termina cada sesión.
+         *
+         * Mi Fitness puede dejar en Health Connect varias versiones de la misma noche
+         * (p. ej. 05:03–10:35 y 05:03–11:46). Las sesiones que se solapan en el tiempo se
+         * tratan como una sola noche y se queda la modificada más recientemente
+         * (a igualdad, la más larga). Las que no se solapan (una siesta) se suman.
+         */
+        fun agrupar(sesiones: List<SesionSueno>): Map<LocalDate, SuenoDia> {
+            val ganadoras = mutableListOf<SesionSueno>()
+            val descartadasDe = mutableMapOf<SesionSueno, List<SesionSueno>>()
+
+            var grupo = mutableListOf<SesionSueno>()
+            var finGrupo: ZonedDateTime? = null
+            fun cerrar() {
+                if (grupo.isEmpty()) return
+                val g = grupo.maxWithOrNull(compareBy<SesionSueno>({ it.modificado }, { it.duracionSeg }))!!
+                ganadoras += g
+                descartadasDe[g] = grupo.filter { it !== g }
+                grupo = mutableListOf()
+            }
+            for (s in sesiones.sortedBy { it.inicio }) {
+                val f = finGrupo
+                if (f != null && s.inicio.isBefore(f)) {
+                    grupo += s
+                    if (s.fin.isAfter(f)) finGrupo = s.fin
+                } else {
+                    cerrar()
+                    grupo += s
+                    finGrupo = s.fin
+                }
+            }
+            cerrar()
+
+            return ganadoras
                 .groupBy { it.fin.withZoneSameInstant(ZONA_ESPANA).toLocalDate() }
-                .mapValues { (fecha, lista) -> SuenoDia(fecha, lista.sortedBy { it.inicio }) }
+                .mapValues { (fecha, lista) ->
+                    SuenoDia(
+                        fecha = fecha,
+                        sesiones = lista.sortedBy { it.inicio },
+                        descartadas = lista.flatMap { descartadasDe[it].orEmpty() }.sortedBy { it.inicio },
+                    )
+                }
+        }
     }
 }
 

@@ -89,6 +89,7 @@ class LectorHealthConnect(private val client: HealthConnectClient) {
                 tramos = r.stages.map { s ->
                     Tramo(traducirFase(s.stage), Duration.between(s.startTime, s.endTime).seconds)
                 },
+                modificado = r.metadata.lastModifiedTime,
             )
         }
 

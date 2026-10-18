@@ -3,6 +3,7 @@ package com.nexo.vita
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -59,6 +60,35 @@ class SuenoTest {
         val d = SuenoDia.agrupar(listOf(s)).getValue(LocalDate.parse("2026-10-17"))
         assertEquals(400L, d.min)
         assertEquals(FasesMin(0, 0, 0, 20), d.fases)
+    }
+
+    /** Caso real del 18/10: Mi Fitness dejó dos versiones de la misma noche. */
+    @Test
+    fun versionesSolapadas_cuentaSoloLaMasReciente() {
+        val primera = SesionSueno(
+            t("2026-10-18T05:03:00"), t("2026-10-18T10:35:00"), "com.xiaomi.wearable",
+            listOf(Tramo(Fase.LIGERO, 260 * 60L), Tramo(Fase.PROFUNDO, 72 * 60L)),
+            modificado = Instant.parse("2026-10-18T08:40:00Z"),
+        )
+        val segunda = SesionSueno(
+            t("2026-10-18T05:03:00"), t("2026-10-18T11:46:00"), "com.xiaomi.wearable",
+            listOf(Tramo(Fase.LIGERO, 317 * 60L), Tramo(Fase.PROFUNDO, 85 * 60L), Tramo(Fase.DESPIERTO, 60L)),
+            modificado = Instant.parse("2026-10-18T09:50:00Z"),
+        )
+        val d = SuenoDia.agrupar(listOf(primera, segunda)).getValue(LocalDate.parse("2026-10-18"))
+        assertEquals(listOf(segunda), d.sesiones)
+        assertEquals(listOf(primera), d.descartadas)
+        assertEquals(402L, d.min)
+        assertEquals(FasesMin(85, 317, 0, 1), d.fases)
+    }
+
+    @Test
+    fun solapadasSinFechaDeModificacion_ganaLaMasLarga() {
+        val corta = SesionSueno(t("2026-10-18T01:00:00"), t("2026-10-18T05:00:00"), "app", emptyList())
+        val larga = SesionSueno(t("2026-10-18T00:30:00"), t("2026-10-18T07:00:00"), "app", emptyList())
+        val d = SuenoDia.agrupar(listOf(corta, larga)).getValue(LocalDate.parse("2026-10-18"))
+        assertEquals(listOf(larga), d.sesiones)
+        assertEquals(390L, d.min)
     }
 
     @Test

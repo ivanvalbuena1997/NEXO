@@ -255,22 +255,14 @@ class MainActivity : ComponentActivity() {
             } else {
                 addView(hud.texto("Sin fases: Health Connect solo trae la sesión.", 14f, Hud.WARN))
             }
-            addView(hud.texto("Sesiones:", 13f, Hud.MUTE).apply { setPadding(0, hud.dp(6), 0, 0) })
-            sueno.sesiones.forEach { s ->
-                val detalle = if (s.conFases) {
-                    val sinDetalle = aMinutos(s.segundosDe(Fase.DORMIDO_SIN_DETALLE))
-                    val desconocido = aMinutos(s.segundosDe(Fase.DESCONOCIDO))
-                    buildString {
-                        append("${s.tramos.size} tramos")
-                        if (sinDetalle > 0) append(", dormido sin detalle $sinDetalle min")
-                        if (desconocido > 0) append(", desconocido $desconocido min")
-                    }
-                } else "sin fases"
+            addView(hud.texto("Sesiones que cuentan:", 13f, Hud.MUTE).apply { setPadding(0, hud.dp(6), 0, 0) })
+            sueno.sesiones.forEach { addView(hud.texto(lineaSesion(it), 13f, Hud.MUTE)) }
+            if (sueno.descartadas.isNotEmpty()) {
                 addView(hud.texto(
-                    "· ${s.inicio.format(fmtHora)}–${s.fin.format(fmtHora)} " +
-                        "(${duracion(aMinutos(s.duracionSeg))} en cama) · ${nombreApp(s.origen)} · $detalle",
-                    13f, Hud.MUTE,
-                ))
+                    "Descartadas por solaparse con una versión más reciente:",
+                    13f, Hud.WARN,
+                ).apply { setPadding(0, hud.dp(6), 0, 0) })
+                sueno.descartadas.forEach { addView(hud.texto(lineaSesion(it), 13f, Hud.MUTE)) }
             }
         }
 
@@ -310,6 +302,26 @@ class MainActivity : ComponentActivity() {
             null
         }
         if (etiqueta != null && etiqueta != pkg) "$etiqueta ($pkg)" else pkg
+    }
+
+    private val fmtModif = DateTimeFormatter.ofPattern("d/M HH:mm")
+
+    /** Una línea de diagnóstico por sesión: horario, fases propias, app y modificación. */
+    private fun lineaSesion(s: SesionSueno): String {
+        val detalle = if (s.conFases) buildString {
+            append("profundo ${aMinutos(s.segundosDe(Fase.PROFUNDO))}")
+            append(" · ligero ${aMinutos(s.segundosDe(Fase.LIGERO))}")
+            append(" · REM ${aMinutos(s.segundosDe(Fase.REM))}")
+            append(" · despierto ${aMinutos(s.segundosDe(Fase.DESPIERTO))}")
+            val sinDetalle = aMinutos(s.segundosDe(Fase.DORMIDO_SIN_DETALLE))
+            val desconocido = aMinutos(s.segundosDe(Fase.DESCONOCIDO))
+            if (sinDetalle > 0) append(" · sin detalle $sinDetalle")
+            if (desconocido > 0) append(" · desconocido $desconocido")
+            append(" min (${s.tramos.size} tramos)")
+        } else "sin fases"
+        val modif = s.modificado.atZone(ZONA_ESPANA).format(fmtModif)
+        return "· ${s.inicio.format(fmtHora)}–${s.fin.format(fmtHora)} " +
+            "(${duracion(aMinutos(s.duracionSeg))}) · $detalle · ${nombreApp(s.origen)} · modificada $modif"
     }
 
     private fun miles(n: Long): String = String.format(es, "%,d", n)
