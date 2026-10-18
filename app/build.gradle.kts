@@ -11,8 +11,8 @@ android {
         applicationId = "com.nexo.vita"
         minSdk = 28
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
     }
 
     // La clave de firma no está en el repositorio: GitHub Actions la descifra
@@ -57,6 +57,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+    implementation("androidx.work:work-runtime:2.12.0")
 
     // Firebase (mismo proyecto que V.I.T.A.) e inicio de sesión con Google.
     implementation(platform("com.google.firebase:firebase-bom:35.0.2"))

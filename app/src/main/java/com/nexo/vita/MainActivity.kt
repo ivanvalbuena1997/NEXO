@@ -1,9 +1,13 @@
 package com.nexo.vita
 
+import android.app.TimePickerDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -77,6 +81,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        ultimaSync = Sincronizador.ultimo(this) // puede haberla hecho la sincronización automática
+        if (Programador.activa(this)) Programador.reprogramar(this)
         // Al volver de Ajustes o de Health Connect, los permisos pueden haber cambiado.
         actualizar()
     }
@@ -123,6 +129,7 @@ class MainActivity : ComponentActivity() {
         contenido.addView(cabecera())
         contenido.addView(tarjetaEstado())
         if (client != null) contenido.addView(tarjetaSincronizacion())
+        if (client != null && cuenta.usuario != null) contenido.addView(tarjetaProgramacion())
         if (client != null && concedidos.any { it in LectorHealthConnect.PERMISOS }) {
             contenido.addView(tarjetaLectura())
             dias.forEach { contenido.addView(tarjetaDia(it)) }
@@ -160,16 +167,13 @@ class MainActivity : ComponentActivity() {
                 false -> "No disponible" to Hud.WARN
                 null -> "—" to Hud.MUTE
             }
-            addView(hud.fila("Lectura en segundo plano", txtBg, colBg))
-            addView(hud.texto(
-                "La lectura en segundo plano se usará a partir de la 0.3, para la sincronización diaria.",
-                13f, Hud.MUTE,
-            ).apply { setPadding(0, hud.dp(2), 0, 0) })
+            addView(hud.fila("Lectura en segundo plano (móvil)", txtBg, colBg))
+            if (segundoPlanoDisponible == true) {
+                addView(filaPermiso("Permiso de segundo plano", LectorHealthConnect.PERMISO_SEGUNDO_PLANO))
+            }
 
-            if (!concedidos.containsAll(LectorHealthConnect.PERMISOS)) {
-                addView(hud.boton("Conceder permisos") {
-                    pedirPermisos.launch(LectorHealthConnect.PERMISOS)
-                })
+            if (!concedidos.containsAll(permisosAPedir)) {
+                addView(hud.boton("Conceder permisos") { pedirPermisos.launch(permisosAPedir) })
             }
             addView(hud.boton("Abrir Health Connect", principal = false) { abrirHealthConnect() })
         }
@@ -189,7 +193,8 @@ class MainActivity : ComponentActivity() {
         val s = ultimaSync
         addView(hud.fila(
             "Última sincronización",
-            s?.cuando?.format(fmtSync)?.replaceFirstChar { it.titlecase(es) } ?: "Nunca",
+            s?.let { it.cuando.format(fmtSync).replaceFirstChar { c -> c.titlecase(es) } + " (${it.origen.texto})" }
+                ?: "Nunca",
             when (s?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE },
         ))
         if (s != null) {
@@ -214,6 +219,69 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun tarjetaProgramacion(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("Sincronización diaria"))
+        val activa = Programador.activa(this@MainActivity)
+        val h = Programador.hora(this@MainActivity)
+        val m = Programador.minuto(this@MainActivity)
+        addView(hud.fila("Estado", if (activa) "Activada" else "Desactivada", if (activa) Hud.OK else Hud.MUTE))
+        addView(hud.fila("Hora", String.format(es, "%02d:%02d", h, m)))
+        if (activa) {
+            Programador.proxima(this@MainActivity)?.let {
+                addView(hud.fila("Próxima", it.format(fmtSync).replaceFirstChar { c -> c.titlecase(es) }))
+            }
+        }
+
+        val exacta = Programador.puedeExacta(this@MainActivity)
+        addView(hud.fila(
+            "Alarmas y recordatorios",
+            if (exacta) "Permitido" else "No permitido",
+            if (exacta) Hud.OK else Hud.WARN,
+        ))
+        val bg = LectorHealthConnect.PERMISO_SEGUNDO_PLANO in concedidos
+        addView(hud.fila("Lectura en segundo plano", if (bg) "Concedida" else "Sin conceder", if (bg) Hud.OK else Hud.WARN))
+
+        val avisos = buildList {
+            if (!exacta) add("Sin «Alarmas y recordatorios» la sincronización puede retrasarse.")
+            if (!bg) add("Sin el permiso de segundo plano, la sincronización automática fallará.")
+        }
+        avisos.forEach { addView(hud.texto(it, 13f, Hud.WARN)) }
+
+        addView(hud.boton(if (activa) "Desactivar" else "Activar") {
+            Programador.configurar(this@MainActivity, !activa, h, m)
+            pintar()
+        })
+        addView(hud.boton("Cambiar hora", principal = false) { elegirHora(activa, h, m) })
+        if (!exacta && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            addView(hud.boton("Permitir alarmas y recordatorios", principal = false) {
+                abrir(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+            })
+        }
+        addView(hud.boton("Ajustes de batería de NEXO", principal = false) {
+            abrir(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        })
+        addView(hud.texto(
+            "Cada día a esa hora escribe ayer y hoy, como «Sincronizar ahora». En HyperOS conviene " +
+                "activar el inicio automático de NEXO y poner su batería «Sin restricciones».",
+            13f, Hud.MUTE,
+        ).apply { setPadding(0, hud.dp(6), 0, 0) })
+    }
+
+    private fun elegirHora(activa: Boolean, h: Int, m: Int) {
+        TimePickerDialog(this, { _, nuevaH, nuevoM ->
+            Programador.configurar(this, activa, nuevaH, nuevoM)
+            pintar()
+        }, h, m, true).show()
+    }
+
+    private fun abrir(intent: Intent) {
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "No se pudo abrir el ajuste", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun iniciarSesion() {
         lifecycleScope.launch {
             mensajeCuenta = cuenta.iniciarSesion()
@@ -234,11 +302,17 @@ class MainActivity : ComponentActivity() {
         sincronizando = true
         pintar()
         lifecycleScope.launch {
-            ultimaSync = Sincronizador(this@MainActivity).sincronizar(c)
+            ultimaSync = Sincronizador(this@MainActivity).sincronizar(c, Sincronizador.Origen.MANUAL)
             sincronizando = false
             actualizar() // vuelve a leer y repinta
         }
     }
+
+    /** Permisos que se piden: pasos, sueño y, si el móvil lo admite, lectura en segundo plano. */
+    private val permisosAPedir: Set<String>
+        get() = if (segundoPlanoDisponible == true)
+            LectorHealthConnect.PERMISOS + LectorHealthConnect.PERMISO_SEGUNDO_PLANO
+        else LectorHealthConnect.PERMISOS
 
     private fun filaPermiso(clave: String, permiso: String): View {
         val ok = permiso in concedidos

@@ -7,6 +7,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import java.time.ZonedDateTime
@@ -14,18 +15,33 @@ import java.time.ZonedDateTime
 /** Lee AYER y HOY de Health Connect y los escribe en Firestore según el [Contrato]. */
 class Sincronizador(private val ctx: Context) {
 
-    data class Resultado(val ok: Boolean, val cuando: ZonedDateTime, val texto: String)
+    enum class Origen(val texto: String) { MANUAL("manual"), AUTOMATICA("automática") }
 
-    suspend fun sincronizar(client: HealthConnectClient): Resultado {
+    data class Resultado(
+        val ok: Boolean,
+        val cuando: ZonedDateTime,
+        val texto: String,
+        val origen: Origen = Origen.MANUAL,
+        /** Fallo pasajero (red, Firestore) que merece reintentar; no se guarda. */
+        val reintentable: Boolean = false,
+    )
+
+    suspend fun sincronizar(client: HealthConnectClient, origen: Origen): Resultado {
         val ahora = ZonedDateTime.now(ZONA_ESPANA)
+        fun fallo(texto: String, reintentable: Boolean = false) =
+            Resultado(false, ahora, texto, origen, reintentable)
+
         val res = try {
             val uid = FirebaseAuth.getInstance().currentUser?.uid
-                ?: return guardar(Resultado(false, ahora, "No has iniciado sesión."))
+                ?: return guardar(fallo("No has iniciado sesión."))
 
             val lector = LectorHealthConnect(client)
             val concedidos = lector.permisosConcedidos()
             if (!concedidos.containsAll(LectorHealthConnect.PERMISOS)) {
-                return guardar(Resultado(false, ahora, "Faltan permisos de Health Connect."))
+                return guardar(fallo("Faltan permisos de Health Connect (pasos y sueño)."))
+            }
+            if (origen == Origen.AUTOMATICA && LectorHealthConnect.PERMISO_SEGUNDO_PLANO !in concedidos) {
+                return guardar(fallo("Falta el permiso de Health Connect para leer en segundo plano."))
             }
 
             val dias = lector.leerDias(2, concedidos) // [hoy, ayer]
@@ -55,11 +71,13 @@ class Sincronizador(private val ctx: Context) {
                 val nombre = if (dia.fecha == hoy) "Hoy" else "Ayer"
                 "$nombre: pasos ${describir(plan.pasos)}, sueño ${describir(plan.sueno)}"
             }
-            Resultado(true, ahora, texto)
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            Resultado(false, ahora, "Sin respuesta de Firestore en ${TIEMPO_MAX_MS / 1000} s. ¿Hay conexión?")
+            Resultado(true, ahora, texto, origen)
+        } catch (e: TimeoutCancellationException) {
+            fallo("Sin respuesta de Firestore en ${TIEMPO_MAX_MS / 1000} s. ¿Hay conexión?", reintentable = true)
+        } catch (e: SecurityException) {
+            fallo("Health Connect denegó la lectura: ${e.message ?: "sin detalle"}")
         } catch (e: Exception) {
-            Resultado(false, ahora, "${e.javaClass.simpleName}: ${e.message ?: "sin detalle"}")
+            fallo("${e.javaClass.simpleName}: ${e.message ?: "sin detalle"}", reintentable = true)
         }
         return guardar(res)
     }
@@ -75,7 +93,8 @@ class Sincronizador(private val ctx: Context) {
             .putString(K_CUANDO, isoLocal(r.cuando))
             .putBoolean(K_OK, r.ok)
             .putString(K_TEXTO, r.texto)
-            .apply()
+            .putString(K_ORIGEN, r.origen.name)
+            .commit()
         return r
     }
 
@@ -84,6 +103,7 @@ class Sincronizador(private val ctx: Context) {
         private const val K_CUANDO = "sync_cuando"
         private const val K_OK = "sync_ok"
         private const val K_TEXTO = "sync_texto"
+        private const val K_ORIGEN = "sync_origen"
 
         private fun prefs(ctx: Context) = ctx.getSharedPreferences("nexo", Context.MODE_PRIVATE)
 
@@ -94,6 +114,7 @@ class Sincronizador(private val ctx: Context) {
                 p.getBoolean(K_OK, false),
                 ZonedDateTime.parse(cuando),
                 p.getString(K_TEXTO, "") ?: "",
+                runCatching { Origen.valueOf(p.getString(K_ORIGEN, null) ?: "") }.getOrDefault(Origen.MANUAL),
             )
         }
     }

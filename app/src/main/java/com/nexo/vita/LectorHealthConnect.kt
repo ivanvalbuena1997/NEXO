@@ -21,6 +21,9 @@ class LectorHealthConnect(private val client: HealthConnectClient) {
         val PERMISO_SUENO = HealthPermission.getReadPermission(SleepSessionRecord::class)
         val PERMISOS = setOf(PERMISO_PASOS, PERMISO_SUENO)
 
+        /** Nombre del permiso tal como lo declara el manifiesto (documentación de Health Connect). */
+        const val PERMISO_SEGUNDO_PLANO = "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"
+
         fun traducirFase(tipo: Int): Fase = when (tipo) {
             SleepSessionRecord.STAGE_TYPE_DEEP -> Fase.PROFUNDO
             SleepSessionRecord.STAGE_TYPE_LIGHT -> Fase.LIGERO

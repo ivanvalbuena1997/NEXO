@@ -6,6 +6,11 @@
     <!-- Health Connect: solo lectura de pasos y sueño. -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+
+    <!-- Sincronización diaria a la hora elegida. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Android 13 o anterior: Health Connect es una app aparte. -->
     <!-- Apps con icono en el lanzador: para mostrar el nombre de la app que escribió cada dato. -->
@@ -32,6 +37,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".AlarmaReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".SistemaReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Hasta Android 13: explicación de los permisos de Health Connect. -->
         <activity
