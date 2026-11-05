@@ -63,6 +63,13 @@ jobs:
           if not web:
               print("::error title=google-services.json::No contiene el cliente web de OAuth (client_type 3). Comprueba que Google está activado en Authentication y que la huella SHA-1 está añadida, y vuelve a descargar el archivo."); raise SystemExit(1)
           print("google-services.json correcto: proyecto", d["project_info"]["project_id"])
+          sha1 = "271d1521a42bba95f76877f54044b596eabceee8"
+          android = [o for o in apps[0].get("oauth_client", []) if o.get("client_type") == 1]
+          huellas = [o.get("android_info", {}).get("certificate_hash", "").lower() for o in android]
+          if sha1 in huellas:
+              print("Cliente OAuth de Android con la huella SHA-1 de NEXO: sí")
+          else:
+              print("::warning title=Cliente OAuth de Android::google-services.json no trae un cliente de Android con la huella SHA-1 de NEXO (%d clientes de Android). La API de autorización de Google lo necesita para el permiso de Drive." % len(android))
           PY
           echo "real=si" >> "$GITHUB_OUTPUT"
 

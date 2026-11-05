@@ -14,6 +14,14 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import com.nexo.vita.drive.CopiaVita
+import com.nexo.vita.drive.DriveApi
+import com.nexo.vita.drive.Json
+import com.nexo.vita.drive.PermisoDrive
+import com.nexo.vita.drive.PruebaDriveWorker
+import com.nexo.vita.drive.Respaldo
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.health.connect.client.HealthConnectClient
@@ -51,6 +59,20 @@ class MainActivity : ComponentActivity() {
     private var sincronizando = false
     private var ultimaSync: Sincronizador.Resultado? = null
     private val fmtSync = DateTimeFormatter.ofPattern("EEE d/M 'a las' HH:mm", es)
+
+    // ---- Copia en Drive (0.4): diagnóstico de solo lectura
+    private var lecturaFs: Respaldo.Lectura? = null
+    private var tamanoCopia: Int? = null
+    private var estadoDrive: Respaldo.EstadoDrive? = null
+    private var errorDrive: String? = null
+    private var ocupadoCopia: String? = null
+
+    private val pedirPermisoDrive = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { r ->
+        if (r.resultCode == RESULT_OK) comprobarDrive(reintento = true)
+        else { ocupadoCopia = null; errorDrive = "No se concedió el permiso de Drive."; pintar() }
+    }
 
     private val pedirPermisos = registerForActivityResult(
         PermissionController.createRequestPermissionResultContract()
@@ -130,6 +152,7 @@ class MainActivity : ComponentActivity() {
         contenido.addView(tarjetaEstado())
         if (client != null) contenido.addView(tarjetaSincronizacion())
         if (client != null && cuenta.usuario != null) contenido.addView(tarjetaProgramacion())
+        if (cuenta.usuario != null) contenido.addView(tarjetaCopia())
         if (client != null && concedidos.any { it in LectorHealthConnect.PERMISOS }) {
             contenido.addView(tarjetaLectura())
             dias.forEach { contenido.addView(tarjetaDia(it)) }
@@ -279,6 +302,127 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "No se pudo abrir el ajuste", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun tarjetaCopia(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("Copia de V.I.T.A. en Drive"))
+        addView(hud.texto(
+            "Comprobación previa: solo LEE Firestore y la carpeta «V.I.T.A.» de Drive. No sube ni cambia nada.",
+            13f, Hud.MUTE,
+        ))
+
+        // Firestore
+        addView(hud.separador())
+        addView(hud.etiqueta("Firestore", Hud.DIM))
+        val l = lecturaFs
+        if (l == null) {
+            addView(hud.texto("Sin leer.", 14f, Hud.MUTE))
+        } else {
+            addView(hud.fila("ajustes/principal", if (l.ajustes != null) "Sí" else "No", if (l.ajustes != null) Hud.OK else Hud.BAD))
+            addView(hud.fila("compra/actual", if (l.compra != null) "Sí" else "No", Hud.TEXT))
+            CopiaVita.COLECCIONES.forEach { c ->
+                val err = l.errores[c]
+                if (err != null) addView(hud.fila(c, "Error", Hud.BAD))
+                else addView(hud.fila(c, "${l.colecciones[c]?.size ?: 0} documentos"))
+            }
+            l.errores.forEach { (c, m) -> addView(hud.texto("$c: $m", 13f, Hud.BAD)) }
+            addView(hud.fila(
+                "Tipos especiales de Firestore",
+                if (l.especiales.isEmpty()) "Ninguno" else "${l.especiales.size}",
+                if (l.especiales.isEmpty()) Hud.OK else Hud.WARN,
+            ))
+            l.especiales.take(5).forEach { addView(hud.texto("· $it", 12f, Hud.WARN)) }
+            tamanoCopia?.let { addView(hud.fila("Tamaño de la copia", String.format(es, "%,d KB", (it + 512) / 1024))) }
+        }
+        addView(hud.boton(if (ocupadoCopia == "fs") "Leyendo…" else "Leer V.I.T.A. (Firestore)", principal = false) {
+            if (ocupadoCopia == null) leerFirestoreCopia()
+        })
+
+        // Drive
+        addView(hud.separador())
+        addView(hud.etiqueta("Google Drive", Hud.DIM))
+        val d = estadoDrive
+        errorDrive?.let { addView(hud.texto(it, 14f, Hud.BAD)) }
+        if (d != null) {
+            addView(hud.fila("Carpeta", "«${d.carpeta?.nombre}» visible", Hud.OK))
+            addView(hud.fila("Archivos en la carpeta", "${d.archivos.size}"))
+            addView(hud.fila(CopiaVita.ULTIMA, if (d.ultima != null) "Encontrada" else "No está",
+                if (d.ultima != null) Hud.OK else Hud.WARN))
+            d.versionUltima?.let { addView(hud.fila("Hecha por", it)) }
+            d.exportadoUltima?.let { addView(hud.fila("Exportada", it.take(16).replace('T', ' ') + " UTC")) }
+            addView(hud.fila("«documentacion»", if (d.documentacion != null) "Se puede copiar" else "No disponible",
+                if (d.documentacion != null) Hud.OK else Hud.WARN))
+            addView(hud.fila("Copias fechadas", "${d.fechadas.size}"))
+            d.avisoUltima?.let { addView(hud.texto(it, 13f, Hud.WARN)) }
+        } else if (errorDrive == null) {
+            addView(hud.texto("Sin comprobar.", 14f, Hud.MUTE))
+        }
+        addView(hud.boton(if (ocupadoCopia == "drive") "Comprobando…" else "Comprobar Drive", principal = false) {
+            if (ocupadoCopia == null) comprobarDrive(reintento = false)
+        })
+
+        // Permiso en segundo plano
+        addView(hud.separador())
+        addView(hud.etiqueta("Permiso en segundo plano", Hud.DIM))
+        val prueba = PruebaDriveWorker.ultimo(this@MainActivity)
+        if (prueba == null) addView(hud.texto("Sin probar.", 14f, Hud.MUTE))
+        else {
+            val (cuando, texto) = prueba
+            addView(hud.texto(cuando.take(16).replace('T', ' '), 13f, Hud.MUTE))
+            addView(hud.texto(texto, 14f, if (texto.startsWith("Token")) Hud.OK else Hud.DIM))
+        }
+        addView(hud.boton("Probar en segundo plano", principal = false) {
+            PruebaDriveWorker.encolar(this@MainActivity); pintar()
+        })
+        addView(hud.texto(
+            "Concede antes el permiso con «Comprobar Drive». Después pulsa este botón, cierra NEXO " +
+                "(también desde recientes) y vuelve a abrirla pasados 2 minutos.",
+            13f, Hud.MUTE,
+        ))
+    }
+
+    private fun leerFirestoreCopia() {
+        val uid = cuenta.usuario?.uid ?: return
+        ocupadoCopia = "fs"; pintar()
+        lifecycleScope.launch {
+            val l = Respaldo.leerFirestore(uid)
+            lecturaFs = l
+            tamanoCopia = if (l.ajustes != null) Json.escribir(
+                CopiaVita.montar("nexo-${BuildConfig.VERSION_NAME}", java.time.Instant.now(), null,
+                    l.ajustes, l.compra, l.colecciones)
+            ).toByteArray(Charsets.UTF_8).size else null
+            ocupadoCopia = null
+            pintar()
+        }
+    }
+
+    private fun comprobarDrive(reintento: Boolean) {
+        val usuario = cuenta.usuario ?: return
+        ocupadoCopia = "drive"; errorDrive = null; pintar()
+        lifecycleScope.launch {
+            try {
+                when (val e = PermisoDrive.pedir(this@MainActivity, usuario.email)) {
+                    is PermisoDrive.Estado.NecesitaPermiso -> {
+                        if (reintento) {
+                            errorDrive = "Google sigue pidiendo permiso después de concederlo."
+                        } else {
+                            pedirPermisoDrive.launch(IntentSenderRequest.Builder(e.intent.intentSender).build())
+                            return@launch // sigue al volver de la pantalla de Google
+                        }
+                    }
+                    is PermisoDrive.Estado.Token -> {
+                        val l = lecturaFs ?: Respaldo.leerFirestore(usuario.uid).also { lecturaFs = it }
+                        estadoDrive = Respaldo.comprobarDrive(DriveApi(e.valor), l.carpetaId, l.ultimaId)
+                    }
+                }
+            } catch (ex: Respaldo.CarpetaNoVisible) {
+                estadoDrive = null; errorDrive = ex.message
+            } catch (ex: Exception) {
+                estadoDrive = null; errorDrive = "${ex.javaClass.simpleName}: ${ex.message ?: "sin detalle"}"
+            }
+            ocupadoCopia = null
+            pintar()
         }
     }
 

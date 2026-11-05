@@ -11,8 +11,8 @@ android {
         applicationId = "com.nexo.vita"
         minSdk = 28
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.4.0"
     }
 
     // La clave de firma no está en el repositorio: GitHub Actions la descifra
@@ -66,6 +66,10 @@ dependencies {
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+
+    // Copia en Google Drive: permiso con la API de autorización de Google y llamadas REST.
+    implementation("com.google.android.gms:play-services-auth:22.0.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
 }
