@@ -324,9 +324,25 @@ class MainActivity : ComponentActivity() {
         addView(hud.boton(if (ocupadoCopia == "subir") "Subiendo…" else "Subir copia ahora") {
             if (ocupadoCopia == null) subirCopiaAhora(reintento = false)
         })
+        val diaria = SyncWorker.copiaDiariaActiva(this@MainActivity)
+        val programada = Programador.activa(this@MainActivity)
+        addView(hud.fila(
+            "Copia diaria",
+            when {
+                !diaria -> "Desactivada"
+                programada -> "Tras la sincronización de las " +
+                    String.format(es, "%02d:%02d", Programador.hora(this@MainActivity), Programador.minuto(this@MainActivity))
+                else -> "Activa, pero la sincronización diaria está desactivada"
+            },
+            if (diaria && programada) Hud.OK else Hud.WARN,
+        ))
+        addView(hud.boton(if (diaria) "Desactivar copia diaria" else "Activar copia diaria", principal = false) {
+            SyncWorker.activarCopiaDiaria(this@MainActivity, !diaria); pintar()
+        })
         addView(hud.texto(
             "Lee V.I.T.A. de Firestore y actualiza vita-copia-ultima.json y la copia del día en la carpeta " +
-                "«V.I.T.A.». Deja las 8 copias fechadas más recientes.",
+                "«V.I.T.A.». Deja las 8 copias fechadas más recientes. La diaria se hace una vez al día, " +
+                "justo después de sincronizar pasos y sueño.",
             13f, Hud.MUTE,
         ).apply { setPadding(0, hud.dp(6), 0, 0) })
 
