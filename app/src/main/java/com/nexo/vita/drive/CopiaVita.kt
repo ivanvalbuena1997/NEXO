@@ -98,4 +98,16 @@ object CopiaVita {
             .drop(GUARDAR_FECHADAS)
 
     fun esFechada(nombre: String) = FECHADA.matches(nombre)
+
+    /**
+     * Comprobación de seguridad antes de sustituir la copia de Drive: si una colección que
+     * tenía al menos 5 documentos baja a menos de la mitad, algo raro pasa (lectura incompleta)
+     * y no se sube, para no machacar una copia buena. Devuelve los motivos (vacío = todo bien).
+     */
+    fun caidasSospechosas(antes: Map<String, Int>, ahora: Map<String, Int>): List<String> =
+        COLECCIONES.mapNotNull { c ->
+            val a = antes[c] ?: return@mapNotNull null
+            val n = ahora[c] ?: 0
+            if (a >= 5 && n * 2 < a) "$c: $a → $n documentos" else null
+        }
 }

@@ -22,6 +22,7 @@ import com.nexo.vita.drive.Json
 import com.nexo.vita.drive.PermisoDrive
 import com.nexo.vita.drive.PruebaDriveWorker
 import com.nexo.vita.drive.Respaldo
+import com.nexo.vita.drive.SubidaCopia
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.health.connect.client.HealthConnectClient
@@ -67,11 +68,16 @@ class MainActivity : ComponentActivity() {
     private var errorDrive: String? = null
     private var ocupadoCopia: String? = null
 
+    private var ultimaCopia: SubidaCopia.Resultado? = null
+    /** Qué hacer al volver de la pantalla de permiso de Google (true = concedido). */
+    private var trasPermisoDrive: ((Boolean) -> Unit)? = null
+
     private val pedirPermisoDrive = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { r ->
-        if (r.resultCode == RESULT_OK) comprobarDrive(reintento = true)
-        else { ocupadoCopia = null; errorDrive = "No se concedió el permiso de Drive."; pintar() }
+        val seguir = trasPermisoDrive
+        trasPermisoDrive = null
+        seguir?.invoke(r.resultCode == RESULT_OK)
     }
 
     private val pedirPermisos = registerForActivityResult(
@@ -104,6 +110,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         ultimaSync = Sincronizador.ultimo(this) // puede haberla hecho la sincronización automática
+        ultimaCopia = SubidaCopia.ultimo(this)
         if (Programador.activa(this)) Programador.reprogramar(this)
         // Al volver de Ajustes o de Health Connect, los permisos pueden haber cambiado.
         actualizar()
@@ -307,14 +314,25 @@ class MainActivity : ComponentActivity() {
 
     private fun tarjetaCopia(): View = hud.tarjeta().apply {
         addView(hud.etiqueta("Copia de V.I.T.A. en Drive"))
-        addView(hud.texto(
-            "Comprobación previa: solo LEE Firestore y la carpeta «V.I.T.A.» de Drive. No sube ni cambia nada.",
-            13f, Hud.MUTE,
+        val uc = ultimaCopia
+        addView(hud.fila(
+            "Última copia",
+            uc?.let { it.cuando.format(fmtSync).replaceFirstChar { c -> c.titlecase(es) } + " (${it.origen.texto})" } ?: "Nunca",
+            when (uc?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE },
         ))
+        uc?.let { addView(hud.texto(it.texto, 14f, if (it.ok) Hud.DIM else Hud.BAD)) }
+        addView(hud.boton(if (ocupadoCopia == "subir") "Subiendo…" else "Subir copia ahora") {
+            if (ocupadoCopia == null) subirCopiaAhora(reintento = false)
+        })
+        addView(hud.texto(
+            "Lee V.I.T.A. de Firestore y actualiza vita-copia-ultima.json y la copia del día en la carpeta " +
+                "«V.I.T.A.». Deja las 8 copias fechadas más recientes.",
+            13f, Hud.MUTE,
+        ).apply { setPadding(0, hud.dp(6), 0, 0) })
 
-        // Firestore
+        // Diagnóstico (solo lectura)
         addView(hud.separador())
-        addView(hud.etiqueta("Firestore", Hud.DIM))
+        addView(hud.etiqueta("Diagnóstico · Firestore (solo lectura)", Hud.DIM))
         val l = lecturaFs
         if (l == null) {
             addView(hud.texto("Sin leer.", 14f, Hud.MUTE))
@@ -341,7 +359,7 @@ class MainActivity : ComponentActivity() {
 
         // Drive
         addView(hud.separador())
-        addView(hud.etiqueta("Google Drive", Hud.DIM))
+        addView(hud.etiqueta("Diagnóstico · Google Drive (solo lectura)", Hud.DIM))
         val d = estadoDrive
         errorDrive?.let { addView(hud.texto(it, 14f, Hud.BAD)) }
         if (d != null) {
@@ -382,6 +400,34 @@ class MainActivity : ComponentActivity() {
         ))
     }
 
+    private fun subirCopiaAhora(reintento: Boolean) {
+        val usuario = cuenta.usuario ?: return
+        ocupadoCopia = "subir"; pintar()
+        lifecycleScope.launch {
+            try {
+                when (val e = PermisoDrive.pedir(this@MainActivity, usuario.email)) {
+                    is PermisoDrive.Estado.NecesitaPermiso -> {
+                        if (!reintento) {
+                            trasPermisoDrive = { ok ->
+                                if (ok) subirCopiaAhora(reintento = true)
+                                else { ocupadoCopia = null; pintar() }
+                            }
+                            pedirPermisoDrive.launch(IntentSenderRequest.Builder(e.intent.intentSender).build())
+                            return@launch
+                        }
+                        ultimaCopia = SubidaCopia(this@MainActivity).subir(SubidaCopia.Origen.MANUAL) // dejará el error
+                    }
+                    is PermisoDrive.Estado.Token ->
+                        ultimaCopia = SubidaCopia(this@MainActivity).subir(SubidaCopia.Origen.MANUAL, e.valor)
+                }
+            } catch (ex: Exception) {
+                errorDrive = "${ex.javaClass.simpleName}: ${ex.message ?: "sin detalle"}"
+            }
+            ocupadoCopia = null
+            pintar()
+        }
+    }
+
     private fun leerFirestoreCopia() {
         val uid = cuenta.usuario?.uid ?: return
         ocupadoCopia = "fs"; pintar()
@@ -407,6 +453,10 @@ class MainActivity : ComponentActivity() {
                         if (reintento) {
                             errorDrive = "Google sigue pidiendo permiso después de concederlo."
                         } else {
+                            trasPermisoDrive = { ok ->
+                                if (ok) comprobarDrive(reintento = true)
+                                else { ocupadoCopia = null; errorDrive = "No se concedió el permiso de Drive."; pintar() }
+                            }
                             pedirPermisoDrive.launch(IntentSenderRequest.Builder(e.intent.intentSender).build())
                             return@launch // sigue al volver de la pantalla de Google
                         }

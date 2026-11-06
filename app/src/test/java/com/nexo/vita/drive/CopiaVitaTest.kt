@@ -73,4 +73,15 @@ class CopiaVitaTest {
         val borrar = CopiaVita.sobrantes(nombres)
         assertEquals(listOf("vita-copia-2026-11-02.json", "vita-copia-2026-11-01.json"), borrar.map { it.second })
     }
+
+    @Test
+    fun caidasSospechosas_soloCuandoUnaColeccionGrandeBajaAMenosDeLaMitad() {
+        val antes = mapOf("alimentos" to 122, "menus" to 2, "dias" to 67, "diario" to 40)
+        assertTrue(CopiaVita.caidasSospechosas(antes, mapOf("alimentos" to 123, "menus" to 0, "dias" to 67, "diario" to 41)).isEmpty())
+        assertEquals(
+            listOf("dias: 67 → 0 documentos", "alimentos: 122 → 60 documentos"),
+            CopiaVita.caidasSospechosas(antes, mapOf("alimentos" to 60, "menus" to 2, "diario" to 40)),
+        )
+        assertTrue(CopiaVita.caidasSospechosas(emptyMap(), mapOf("dias" to 0)).isEmpty())
+    }
 }

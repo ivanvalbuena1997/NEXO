@@ -81,6 +81,8 @@ object Respaldo {
         val versionUltima: String?,
         val exportadoUltima: String?,
         val avisoUltima: String?,
+        /** Documentos por colección en la copia que ya hay en Drive (para la comprobación de seguridad). */
+        val conteosUltima: Map<String, Int> = emptyMap(),
     ) {
         val fechadas: List<DriveApi.Archivo> get() = archivos.filter { CopiaVita.esFechada(it.nombre) }
     }
@@ -113,6 +115,7 @@ object Respaldo {
         var version: String? = null
         var exportado: String? = null
         var aviso: String? = null
+        val conteos = mutableMapOf<String, Int>()
         if (ultima == null) {
             aviso = "No hay ${CopiaVita.ULTIMA} en la carpeta: la copia irá sin «documentacion»."
         } else {
@@ -121,12 +124,15 @@ object Respaldo {
                 version = j.optString("version_app").ifEmpty { null }
                 exportado = j.optString("exportado").ifEmpty { null }
                 documentacion = j.opt("documentacion")?.let { aKotlin(it) }
+                j.optJSONObject("datos")?.let { d ->
+                    CopiaVita.COLECCIONES.forEach { c -> d.optJSONArray(c)?.let { conteos[c] = it.length() } }
+                }
                 if (documentacion == null) aviso = "La copia de Drive no trae «documentacion»: la nueva irá sin ella."
             } catch (e: Exception) {
                 aviso = "No se pudo leer ${CopiaVita.ULTIMA} (${e.message}): la copia irá sin «documentacion»."
             }
         }
-        return EstadoDrive(carpeta, archivos, ultima, documentacion, version, exportado, aviso)
+        return EstadoDrive(carpeta, archivos, ultima, documentacion, version, exportado, aviso, conteos)
     }
 
     /** org.json → mapas y listas de Kotlin (conserva el orden de las claves). */
