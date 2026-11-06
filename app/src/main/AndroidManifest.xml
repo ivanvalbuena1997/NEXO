@@ -11,6 +11,8 @@
     <!-- Sincronización diaria a la hora elegida. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Botón «Quitar optimización» de la guía de batería (la app no se publica en Google Play). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Android 13 o anterior: Health Connect es una app aparte. -->
     <!-- Apps con icono en el lanzador: para mostrar el nombre de la app que escribió cada dato. -->

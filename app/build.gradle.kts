@@ -11,8 +11,8 @@ android {
         applicationId = "com.nexo.vita"
         minSdk = 28
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.4.2"
+        versionCode = 8
+        versionName = "0.5.0"
     }
 
     // La clave de firma no está en el repositorio: GitHub Actions la descifra

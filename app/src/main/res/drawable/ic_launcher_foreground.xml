@@ -1,37 +1,82 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Icono NEXO: anillo HUD con dos nodos unidos (reloj → V.I.T.A.). Zona segura: círculo de 66 dp centrado. -->
+<!--
+  Icono NEXO · opción A «Enlace», de la familia del logo de V.I.T.A. (icons/icon.svg):
+  monitor redondo con rejilla, anillo y marcas; dentro, el pulso llega a un nodo que se une
+  con otro (reloj → V.I.T.A.). Diseñado sobre 512 y reducido al 84 % para la zona segura
+  del icono adaptable. El brillo del SVG se imita con un trazo ancho y translúcido debajo.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <!-- anillo exterior -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#3FE0FF"
-        android:strokeWidth="2.5"
-        android:pathData="M54,27a27,27 0,1 1,0 54a27,27 0,1 1,0 -54z" />
-    <!-- marcas del anillo -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#3FE0FF"
-        android:strokeWidth="2.5"
-        android:strokeLineCap="round"
-        android:pathData="M54,20v4M54,84v4M20,54h4M84,54h4" />
-    <!-- enlace -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#3FE0FF"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:pathData="M43,65L65,43" />
-    <!-- nodos -->
-    <path
-        android:fillColor="#3FE0FF"
-        android:pathData="M43,59a6,6 0,1 1,0 12a6,6 0,1 1,0 -12z" />
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#3FE0FF"
-        android:strokeWidth="3"
-        android:pathData="M65,37a6,6 0,1 1,0 12a6,6 0,1 1,0 -12z" />
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group
+        android:pivotX="256"
+        android:pivotY="256"
+        android:scaleX="0.84"
+        android:scaleY="0.84">
+
+        <!-- pantalla del monitor -->
+        <path
+            android:fillColor="#0B141B"
+            android:pathData="M106,256a150,150 0 1,0 300,0a150,150 0 1,0 -300,0z" />
+
+        <group>
+            <clip-path android:pathData="M106,256a150,150 0 1,0 300,0a150,150 0 1,0 -300,0z" />
+            <!-- rejilla -->
+            <path
+                android:strokeColor="#333FE0FF"
+                android:strokeWidth="2"
+                android:pathData="M106,176H406M106,216H406M106,256H406M106,296H406M106,336H406M176,106V406M216,106V406M256,106V406M296,106V406M336,106V406" />
+            <!-- brillo -->
+            <path
+                android:strokeColor="#403FE0FF"
+                android:strokeWidth="34"
+                android:strokeLineCap="round"
+                android:strokeLineJoin="round"
+                android:pathData="M90,262H118L134,222L156,302L170,262M350,262H422" />
+            <!-- pulso y salida -->
+            <path
+                android:strokeColor="#3FE0FF"
+                android:strokeWidth="18"
+                android:strokeLineCap="square"
+                android:strokeLineJoin="miter"
+                android:pathData="M90,262H118L134,222L156,302L170,262H164M350,262H422" />
+        </group>
+
+        <!-- enlace punteado -->
+        <path
+            android:strokeColor="#E63FE0FF"
+            android:strokeWidth="14"
+            android:pathData="M220,262H232M246,262H258M272,262H284" />
+
+        <!-- nodo de origen (lleno), con brillo -->
+        <path
+            android:fillColor="#403FE0FF"
+            android:pathData="M154,262a36,36 0 1,0 72,0a36,36 0 1,0 -72,0z" />
+        <path
+            android:fillColor="#3FE0FF"
+            android:pathData="M164,262a26,26 0 1,0 52,0a26,26 0 1,0 -52,0z" />
+
+        <!-- nodo de destino (hueco), con brillo -->
+        <path
+            android:strokeColor="#403FE0FF"
+            android:strokeWidth="32"
+            android:pathData="M298,262a26,26 0 1,0 52,0a26,26 0 1,0 -52,0z" />
+        <path
+            android:fillColor="#0B141B"
+            android:strokeColor="#3FE0FF"
+            android:strokeWidth="16"
+            android:pathData="M298,262a26,26 0 1,0 52,0a26,26 0 1,0 -52,0z" />
+
+        <!-- anillo exterior y marcas -->
+        <path
+            android:strokeColor="#8C3FE0FF"
+            android:strokeWidth="5"
+            android:pathData="M86,256a170,170 0 1,0 340,0a170,170 0 1,0 -340,0z" />
+        <path
+            android:strokeColor="#3FE0FF"
+            android:strokeWidth="7"
+            android:pathData="M256,70V92M256,420V442M70,256H92M420,256H442" />
+    </group>
 </vector>

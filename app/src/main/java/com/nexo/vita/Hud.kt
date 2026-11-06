@@ -81,7 +81,7 @@ class Hud(private val ctx: Context) {
 
     fun tarjeta(): LinearLayout = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
-        background = fondo(SURF, LINE)
+        background = MarcoHud(dp(1).coerceAtLeast(1).toFloat())
         setPadding(dp(16), dp(14), dp(16), dp(14))
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -121,5 +121,12 @@ class Hud(private val ctx: Context) {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
             addView(texto(valor, 15f, colorValor, rajdhani700).apply { gravity = Gravity.END })
+        }
+
+    /** Etiqueta en forma de píldora (estado, versión). */
+    fun pildora(s: String, color: Int): TextView =
+        texto(s.uppercase(), 11f, color, rajdhani700, 0.12f).apply {
+            background = fondo(BG, color, 999)
+            setPadding(dp(10), dp(3), dp(10), dp(3))
         }
 }

@@ -1,5 +1,7 @@
 package com.nexo.vita
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.app.TimePickerDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -7,9 +9,12 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
@@ -44,6 +49,12 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var hud: Hud
     private lateinit var contenido: LinearLayout
+    private lateinit var scroll: ScrollView
+    private lateinit var cabeceraFija: LinearLayout
+    private lateinit var barra: LinearLayout
+
+    enum class Pestana(val titulo: String) { ESTADO("Estado"), AJUSTES("Ajustes"), DIAGNOSTICO("Diagnóstico") }
+    private var pestana = Pestana.ESTADO
 
     private var sdkStatus: Int = HealthConnectClient.SDK_UNAVAILABLE
     private var client: HealthConnectClient? = null
@@ -90,21 +101,53 @@ class MainActivity : ComponentActivity() {
         cuenta = Cuenta(this)
         ultimaSync = Sincronizador.ultimo(this)
 
+        pestana = savedInstanceState?.getString("pestana")?.let { runCatching { Pestana.valueOf(it) }.getOrNull() }
+            ?: Pestana.ESTADO
+
+        cabeceraFija = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(hud.dp(16), hud.dp(10), hud.dp(16), hud.dp(10))
+        }
         contenido = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(hud.dp(16), hud.dp(12), hud.dp(16), hud.dp(32))
+            setPadding(hud.dp(16), hud.dp(4), hud.dp(16), hud.dp(24))
         }
-        val scroll = ScrollView(this).apply {
-            setBackgroundColor(Hud.BG)
+        scroll = ScrollView(this).apply {
             isFillViewport = true
             addView(contenido)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        ViewCompat.setOnApplyWindowInsetsListener(scroll) { v, insets ->
+        barra = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Hud.SURF)
+        }
+        val raiz = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = RejillaHud(hud.dp(1).coerceAtLeast(1).toFloat())
+            addView(cabeceraFija)
+            addView(View(context).apply {
+                setBackgroundColor(Hud.LINE)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, hud.dp(1))
+            })
+            addView(scroll)
+            addView(View(context).apply {
+                setBackgroundColor(Hud.LINE)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, hud.dp(1))
+            })
+            addView(barra)
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(raiz) { v, insets ->
             val b = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(b.left, b.top, b.right, b.bottom)
             insets
         }
-        setContentView(scroll)
+        setContentView(raiz)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("pestana", pestana.name)
     }
 
     override fun onResume() {
@@ -154,33 +197,272 @@ class MainActivity : ComponentActivity() {
     // ---------------------------------------------------------------- pintado
 
     private fun pintar() {
+        val y = scroll.scrollY
+        pintarCabecera()
+        pintarBarra()
         contenido.removeAllViews()
-        contenido.addView(cabecera())
-        contenido.addView(tarjetaEstado())
-        if (client != null) contenido.addView(tarjetaSincronizacion())
-        if (client != null && cuenta.usuario != null) contenido.addView(tarjetaProgramacion())
-        if (cuenta.usuario != null) contenido.addView(tarjetaCopia())
-        if (client != null && concedidos.any { it in LectorHealthConnect.PERMISOS }) {
-            contenido.addView(tarjetaLectura())
-            dias.forEach { contenido.addView(tarjetaDia(it)) }
+        when (pestana) {
+            Pestana.ESTADO -> {
+                contenido.addView(tarjetaResumen())
+                contenido.addView(tarjetaHistorial())
+            }
+            Pestana.AJUSTES -> {
+                contenido.addView(tarjetaCuenta())
+                contenido.addView(tarjetaEstado())
+                if (client != null && cuenta.usuario != null) contenido.addView(tarjetaProgramacion())
+                contenido.addView(tarjetaBateria())
+            }
+            Pestana.DIAGNOSTICO -> {
+                if (cuenta.usuario != null) contenido.addView(tarjetaDiagnosticoCopia())
+                if (client != null && concedidos.any { it in LectorHealthConnect.PERMISOS }) {
+                    contenido.addView(tarjetaLectura())
+                    dias.forEach { contenido.addView(tarjetaDia(it)) }
+                }
+            }
+        }
+        scroll.post { scroll.scrollTo(0, y) }
+    }
+
+    // ---------------------------------------------------------------- estado global
+
+    enum class Nivel(val texto: String, val color: Int) {
+        BIEN("En orden", Hud.OK), REVISAR("Revisar", Hud.WARN), FALLO("Atención", Hud.BAD)
+    }
+
+    /** Estado global y motivos (los fallos primero). */
+    private fun estadoGlobal(): Pair<Nivel, List<Pair<Nivel, String>>> {
+        val m = mutableListOf<Pair<Nivel, String>>()
+        val ahora = java.time.ZonedDateTime.now(ZONA_ESPANA)
+        if (cuenta.usuario == null) m += Nivel.FALLO to "Sin iniciar sesión con Google."
+        if (sdkStatus != HealthConnectClient.SDK_AVAILABLE) m += Nivel.FALLO to "Health Connect no disponible."
+        else {
+            if (!concedidos.containsAll(LectorHealthConnect.PERMISOS)) m += Nivel.FALLO to "Faltan permisos de pasos o sueño."
+            if (segundoPlanoDisponible == true && LectorHealthConnect.PERMISO_SEGUNDO_PLANO !in concedidos)
+                m += Nivel.FALLO to "Falta el permiso de lectura en segundo plano."
+        }
+        if (ultimaSync?.ok == false) m += Nivel.FALLO to "La última sincronización falló."
+        if (SyncWorker.copiaDiariaActiva(this) && ultimaCopia?.ok == false) m += Nivel.FALLO to "La última copia en Drive falló."
+
+        val programada = Programador.activa(this)
+        if (!programada) m += Nivel.REVISAR to "La sincronización diaria está desactivada."
+        else {
+            if (!Programador.puedeExacta(this)) m += Nivel.REVISAR to "Sin «Alarmas y recordatorios»: puede retrasarse."
+            val ultimaAuto = Historial.leer(this).firstOrNull()?.cuando
+            val desde = ultimaAuto ?: ultimaSync?.cuando
+            if (desde != null && java.time.Duration.between(desde, ahora).toHours() >= 36)
+                m += Nivel.REVISAR to "Más de 36 h sin ejecución automática."
+        }
+        if (!ignoraOptimizacionBateria()) m += Nivel.REVISAR to "Optimización de batería activa para NEXO."
+
+        val nivel = when {
+            m.any { it.first == Nivel.FALLO } -> Nivel.FALLO
+            m.isNotEmpty() -> Nivel.REVISAR
+            else -> Nivel.BIEN
+        }
+        return nivel to m.sortedBy { it.first != Nivel.FALLO }
+    }
+
+    private var pulso: ObjectAnimator? = null
+
+    private fun pintarCabecera() {
+        cabeceraFija.removeAllViews()
+        cabeceraFija.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_launcher_foreground)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            layoutParams = LinearLayout.LayoutParams(hud.dp(40), hud.dp(40)).apply { marginEnd = hud.dp(6) }
+        })
+        cabeceraFija.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(hud.texto("NEXO", 20f, Hud.TEXT, hud.orbitron700, 0.18f).apply {
+                setShadowLayer(hud.dp(8).toFloat(), 0f, 0f, android.graphics.Color.argb(120, 63, 224, 255))
+            })
+            addView(hud.texto("ENLACE V.I.T.A. · v${BuildConfig.VERSION_NAME}", 11f, Hud.MUTE, hud.rajdhani600, 0.12f))
+        })
+        val (nivel, _) = estadoGlobal()
+        val punto = View(this).apply {
+            background = hud.fondo(nivel.color, nivel.color, 999)
+            layoutParams = LinearLayout.LayoutParams(hud.dp(8), hud.dp(8)).apply { marginEnd = hud.dp(6) }
+        }
+        cabeceraFija.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = hud.fondo(Hud.BG, nivel.color, 999)
+            setPadding(hud.dp(10), hud.dp(4), hud.dp(10), hud.dp(4))
+            isClickable = true
+            setOnClickListener { pestana = Pestana.ESTADO; pintar() }
+            addView(punto)
+            addView(hud.texto(nivel.texto.uppercase(), 11f, nivel.color, hud.rajdhani700, 0.12f))
+        })
+        pulso?.cancel()
+        pulso = ObjectAnimator.ofFloat(punto, View.ALPHA, 1f, 0.25f).apply {
+            duration = 1200
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            start()
         }
     }
 
-    private fun cabecera(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, hud.dp(4), 0, hud.dp(16))
-        addView(hud.texto("NEXO", 22f, Hud.TEXT, hud.orbitron700, 0.16f).apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    private fun pintarBarra() {
+        barra.removeAllViews()
+        Pestana.values().forEach { p ->
+            val activa = p == pestana
+            barra.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(0, hud.dp(56), 1f)
+                isClickable = true
+                setOnClickListener { if (pestana != p) { pestana = p; scroll.scrollTo(0, 0); pintar(); scroll.scrollTo(0, 0) } }
+                addView(View(context).apply {
+                    setBackgroundColor(if (activa) Hud.ACC else android.graphics.Color.TRANSPARENT)
+                    layoutParams = LinearLayout.LayoutParams(hud.dp(36), hud.dp(2))
+                })
+                addView(hud.texto(p.titulo.uppercase(), 11f, if (activa) Hud.ACC else Hud.MUTE, hud.orbitron500, 0.1f).apply {
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
+                    )
+                    if (activa) setShadowLayer(hud.dp(6).toFloat(), 0f, 0f, android.graphics.Color.argb(150, 63, 224, 255))
+                })
+            })
+        }
+    }
+
+    // ---------------------------------------------------------------- pestaña Estado
+
+    private fun fecha(z: java.time.ZonedDateTime) = z.format(fmtSync).replaceFirstChar { it.titlecase(es) }
+
+    private fun tarjetaResumen(): View = hud.tarjeta().apply {
+        val (nivel, motivos) = estadoGlobal()
+        addView(hud.etiqueta("Estado"))
+        addView(hud.texto(nivel.texto.uppercase(), 26f, nivel.color, hud.orbitron700, 0.08f).apply {
+            setShadowLayer(hud.dp(10).toFloat(), 0f, 0f, nivel.color)
+            setPadding(0, hud.dp(4), 0, hud.dp(4))
         })
-        addView(hud.texto("v${BuildConfig.VERSION_NAME}", 13f, Hud.DIM, hud.rajdhani600).apply {
-            background = hud.fondo(Hud.BG, Hud.LINE, 999)
-            setPadding(hud.dp(10), hud.dp(4), hud.dp(10), hud.dp(4))
+        if (motivos.isEmpty()) addView(hud.texto("Todo listo: NEXO sincroniza y guarda la copia cada día.", 14f, Hud.DIM))
+        motivos.forEach { (n, t) -> addView(hud.texto("· $t", 14f, n.color)) }
+        if (motivos.isNotEmpty()) addView(hud.boton("Revisar ajustes", principal = false) { pestana = Pestana.AJUSTES; pintar() })
+
+        addView(hud.separador())
+        val s = ultimaSync
+        addView(hud.fila("Última sincronización",
+            s?.let { fecha(it.cuando) + " (${it.origen.texto})" } ?: "Nunca",
+            when (s?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE }))
+        if (s != null && !s.ok) addView(hud.texto(s.texto, 13f, Hud.BAD))
+        val c = ultimaCopia
+        addView(hud.fila("Última copia en Drive",
+            c?.let { fecha(it.cuando) + " (${it.origen.texto})" } ?: "Nunca",
+            when (c?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE }))
+        if (c != null && !c.ok) addView(hud.texto(c.texto, 13f, Hud.BAD))
+        addView(hud.fila("Próxima ejecución",
+            if (Programador.activa(this@MainActivity)) Programador.proxima(this@MainActivity)?.let { fecha(it) } ?: "—"
+            else "Desactivada",
+            if (Programador.activa(this@MainActivity)) Hud.TEXT else Hud.WARN))
+
+        if (cuenta.usuario != null) {
+            val listo = client != null && concedidos.containsAll(LectorHealthConnect.PERMISOS)
+            addView(hud.boton(if (sincronizando) "Sincronizando…" else "Sincronizar ahora") {
+                if (!sincronizando && listo) sincronizar()
+            }.apply { alpha = if (listo && !sincronizando) 1f else 0.5f })
+            addView(hud.boton(if (ocupadoCopia == "subir") "Subiendo…" else "Subir copia ahora", principal = false) {
+                if (ocupadoCopia == null) subirCopiaAhora(reintento = false)
+            })
+        } else {
+            addView(hud.boton("Iniciar sesión con Google") { iniciarSesion() })
+        }
+    }
+
+    private fun tarjetaHistorial(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("Historial automático"))
+        val h = Historial.leer(this@MainActivity)
+        if (h.isEmpty()) {
+            addView(hud.texto("Aún no hay ejecuciones automáticas registradas (se guardan desde la 0.5).", 14f, Hud.MUTE))
+            return@apply
+        }
+        fun marca(p: Historial.Paso) = when (p) { Historial.Paso.OK -> "✓"; Historial.Paso.FALLO -> "✗"; Historial.Paso.OMITIDA -> "–" }
+        fun color(p: Historial.Paso) = when (p) { Historial.Paso.OK -> Hud.OK; Historial.Paso.FALLO -> Hud.BAD; Historial.Paso.OMITIDA -> Hud.MUTE }
+        h.forEach { e ->
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, hud.dp(4), 0, hud.dp(2))
+                addView(hud.texto(fecha(e.cuando) + if (e.intento > 0) " · reintento ${e.intento}" else "", 14f, Hud.DIM).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                addView(hud.texto("SYNC ${marca(e.sync)}", 12f, color(e.sync), hud.rajdhani700, 0.08f).apply {
+                    setPadding(hud.dp(8), 0, hud.dp(8), 0)
+                })
+                addView(hud.texto("COPIA ${marca(e.copia)}", 12f, color(e.copia), hud.rajdhani700, 0.08f))
+            })
+            if (e.sync == Historial.Paso.FALLO) addView(hud.texto("  ${e.syncTexto}", 12f, Hud.BAD))
+            if (e.copia == Historial.Paso.FALLO) addView(hud.texto("  ${e.copiaTexto}", 12f, Hud.BAD))
+        }
+    }
+
+    // ---------------------------------------------------------------- pestaña Ajustes
+
+    private fun tarjetaCuenta(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("Cuenta de V.I.T.A."))
+        val usuario = cuenta.usuario
+        addView(hud.fila("Cuenta", usuario?.email ?: "Sin iniciar sesión", if (usuario != null) Hud.OK else Hud.WARN))
+        mensajeCuenta?.let { addView(hud.texto(it, 14f, Hud.BAD)) }
+        if (usuario == null) addView(hud.boton("Iniciar sesión con Google") { iniciarSesion() })
+        else addView(hud.boton("Cerrar sesión", principal = false) { cerrarSesion() })
+    }
+
+    private fun ignoraOptimizacionBateria(): Boolean =
+        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+
+    private fun hecho(clave: String) = getSharedPreferences("nexo", MODE_PRIVATE).getBoolean(clave, false)
+    private fun marcar(clave: String, v: Boolean) =
+        getSharedPreferences("nexo", MODE_PRIVATE).edit().putBoolean(clave, v).apply()
+
+    private fun tarjetaBateria(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("Batería y segundo plano (HyperOS)"))
+        addView(hud.texto(
+            "Para que la tarea diaria salte con el móvil en reposo. HyperOS no deja comprobar los dos últimos " +
+                "puntos: márcalos tú cuando estén hechos.",
+            13f, Hud.MUTE,
+        ))
+
+        val opt = ignoraOptimizacionBateria()
+        addView(hud.separador())
+        addView(hud.fila("1 · Optimización de batería de Android", if (opt) "Desactivada" else "Activa", if (opt) Hud.OK else Hud.WARN))
+        if (!opt) addView(hud.boton("Quitar optimización", principal = false) {
+            abrir(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        })
+
+        addView(hud.separador())
+        val ahorro = hecho("guia_ahorro")
+        addView(hud.fila("2 · Ahorro de batería «Sin restricciones»", if (ahorro) "Hecho" else "Pendiente", if (ahorro) Hud.OK else Hud.WARN))
+        val auto = hecho("guia_inicio")
+        addView(hud.fila("3 · Inicio automático", if (auto) "Hecho" else "Pendiente", if (auto) Hud.OK else Hud.WARN))
+        addView(hud.texto("Los dos están en la ficha de NEXO (Ajustes → Aplicaciones → NEXO).", 13f, Hud.MUTE))
+        addView(hud.boton("Abrir la ficha de NEXO", principal = false) {
+            abrir(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        })
+        addView(hud.boton(if (ahorro) "Desmarcar el punto 2" else "Marcar el punto 2 como hecho", principal = false) {
+            marcar("guia_ahorro", !ahorro); pintar()
+        })
+        addView(hud.boton(if (auto) "Desmarcar el punto 3" else "Marcar el punto 3 como hecho", principal = false) {
+            marcar("guia_inicio", !auto); pintar()
+        })
+
+        addView(hud.separador())
+        val bloq = hecho("guia_bloqueo")
+        addView(hud.fila("4 · Bloquear NEXO en recientes", if (bloq) "Hecho" else "Opcional", if (bloq) Hud.OK else Hud.MUTE))
+        addView(hud.texto(
+            "En la vista de apps recientes, mantén pulsada la tarjeta de NEXO y toca el candado. " +
+                "Así «limpiar todo» no la cierra.",
+            13f, Hud.MUTE,
+        ))
+        addView(hud.boton(if (bloq) "Desmarcar el punto 4" else "Marcar el punto 4 como hecho", principal = false) {
+            marcar("guia_bloqueo", !bloq); pintar()
         })
     }
 
     private fun tarjetaEstado(): View = hud.tarjeta().apply {
-        addView(hud.etiqueta("Estado"))
+        addView(hud.etiqueta("Health Connect"))
 
         val (txtHc, colHc) = when (sdkStatus) {
             HealthConnectClient.SDK_AVAILABLE -> "Disponible" to Hud.OK
@@ -206,46 +488,6 @@ class MainActivity : ComponentActivity() {
                 addView(hud.boton("Conceder permisos") { pedirPermisos.launch(permisosAPedir) })
             }
             addView(hud.boton("Abrir Health Connect", principal = false) { abrirHealthConnect() })
-        }
-    }
-
-    private fun tarjetaSincronizacion(): View = hud.tarjeta().apply {
-        addView(hud.etiqueta("V.I.T.A."))
-
-        val usuario = cuenta.usuario
-        addView(hud.fila(
-            "Cuenta",
-            usuario?.email ?: "Sin iniciar sesión",
-            if (usuario != null) Hud.OK else Hud.WARN,
-        ))
-        mensajeCuenta?.let { addView(hud.texto(it, 14f, Hud.BAD).apply { setPadding(0, hud.dp(4), 0, 0) }) }
-
-        val s = ultimaSync
-        addView(hud.fila(
-            "Última sincronización",
-            s?.let { it.cuando.format(fmtSync).replaceFirstChar { c -> c.titlecase(es) } + " (${it.origen.texto})" }
-                ?: "Nunca",
-            when (s?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE },
-        ))
-        if (s != null) {
-            addView(hud.texto(s.texto, 14f, if (s.ok) Hud.DIM else Hud.BAD).apply {
-                setPadding(0, hud.dp(2), 0, 0)
-            })
-        }
-
-        if (usuario == null) {
-            addView(hud.boton("Iniciar sesión con Google") { iniciarSesion() })
-        } else {
-            val listo = concedidos.containsAll(LectorHealthConnect.PERMISOS)
-            addView(hud.boton(if (sincronizando) "Sincronizando…" else "Sincronizar ahora") {
-                if (!sincronizando && listo) sincronizar()
-            }.apply { alpha = if (listo && !sincronizando) 1f else 0.5f })
-            if (!listo) addView(hud.texto("Concede antes los permisos de pasos y sueño.", 13f, Hud.WARN))
-            addView(hud.texto(
-                "Escribe ayer y hoy en V.I.T.A. Lo que hayas corregido a mano en V.I.T.A. no se toca.",
-                13f, Hud.MUTE,
-            ).apply { setPadding(0, hud.dp(6), 0, 0) })
-            addView(hud.boton("Cerrar sesión", principal = false) { cerrarSesion() })
         }
     }
 
@@ -287,12 +529,16 @@ class MainActivity : ComponentActivity() {
                 abrir(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
             })
         }
-        addView(hud.boton("Ajustes de batería de NEXO", principal = false) {
-            abrir(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        addView(hud.separador())
+        val diaria = SyncWorker.copiaDiariaActiva(this@MainActivity)
+        addView(hud.fila("Copia en Drive tras sincronizar", if (diaria) "Activada" else "Desactivada", if (diaria) Hud.OK else Hud.MUTE))
+        addView(hud.boton(if (diaria) "Desactivar copia diaria" else "Activar copia diaria", principal = false) {
+            SyncWorker.activarCopiaDiaria(this@MainActivity, !diaria); pintar()
         })
         addView(hud.texto(
-            "Cada día a esa hora escribe ayer y hoy, como «Sincronizar ahora». En HyperOS conviene " +
-                "activar el inicio automático de NEXO y poner su batería «Sin restricciones».",
+            "Cada día a esa hora escribe ayer y hoy en V.I.T.A. (sin tocar lo corregido a mano) y, " +
+                "justo después, guarda la copia en la carpeta «V.I.T.A.» de Drive (una vez al día; " +
+                "deja las 8 más recientes).",
             13f, Hud.MUTE,
         ).apply { setPadding(0, hud.dp(6), 0, 0) })
     }
@@ -312,43 +558,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun tarjetaCopia(): View = hud.tarjeta().apply {
-        addView(hud.etiqueta("Copia de V.I.T.A. en Drive"))
-        val uc = ultimaCopia
-        addView(hud.fila(
-            "Última copia",
-            uc?.let { it.cuando.format(fmtSync).replaceFirstChar { c -> c.titlecase(es) } + " (${it.origen.texto})" } ?: "Nunca",
-            when (uc?.ok) { true -> Hud.OK; false -> Hud.BAD; null -> Hud.MUTE },
-        ))
-        uc?.let { addView(hud.texto(it.texto, 14f, if (it.ok) Hud.DIM else Hud.BAD)) }
-        addView(hud.boton(if (ocupadoCopia == "subir") "Subiendo…" else "Subir copia ahora") {
-            if (ocupadoCopia == null) subirCopiaAhora(reintento = false)
-        })
-        val diaria = SyncWorker.copiaDiariaActiva(this@MainActivity)
-        val programada = Programador.activa(this@MainActivity)
-        addView(hud.fila(
-            "Copia diaria",
-            when {
-                !diaria -> "Desactivada"
-                programada -> "Tras la sincronización de las " +
-                    String.format(es, "%02d:%02d", Programador.hora(this@MainActivity), Programador.minuto(this@MainActivity))
-                else -> "Activa, pero la sincronización diaria está desactivada"
-            },
-            if (diaria && programada) Hud.OK else Hud.WARN,
-        ))
-        addView(hud.boton(if (diaria) "Desactivar copia diaria" else "Activar copia diaria", principal = false) {
-            SyncWorker.activarCopiaDiaria(this@MainActivity, !diaria); pintar()
-        })
-        addView(hud.texto(
-            "Lee V.I.T.A. de Firestore y actualiza vita-copia-ultima.json y la copia del día en la carpeta " +
-                "«V.I.T.A.». Deja las 8 copias fechadas más recientes. La diaria se hace una vez al día, " +
-                "justo después de sincronizar pasos y sueño.",
-            13f, Hud.MUTE,
-        ).apply { setPadding(0, hud.dp(6), 0, 0) })
-
-        // Diagnóstico (solo lectura)
+    private fun tarjetaDiagnosticoCopia(): View = hud.tarjeta().apply {
+        addView(hud.etiqueta("Copia en Drive · comprobaciones"))
+        addView(hud.texto("Solo leen: no suben ni cambian nada.", 13f, Hud.MUTE))
+        ultimaCopia?.let { addView(hud.texto("Última copia: ${it.texto}", 13f, if (it.ok) Hud.DIM else Hud.BAD)) }
         addView(hud.separador())
-        addView(hud.etiqueta("Diagnóstico · Firestore (solo lectura)", Hud.DIM))
+        addView(hud.etiqueta("Firestore", Hud.DIM))
         val l = lecturaFs
         if (l == null) {
             addView(hud.texto("Sin leer.", 14f, Hud.MUTE))
@@ -375,7 +590,7 @@ class MainActivity : ComponentActivity() {
 
         // Drive
         addView(hud.separador())
-        addView(hud.etiqueta("Diagnóstico · Google Drive (solo lectura)", Hud.DIM))
+        addView(hud.etiqueta("Google Drive", Hud.DIM))
         val d = estadoDrive
         errorDrive?.let { addView(hud.texto(it, 14f, Hud.BAD)) }
         if (d != null) {
@@ -532,7 +747,7 @@ class MainActivity : ComponentActivity() {
     private fun tarjetaLectura(): View = hud.tarjeta().apply {
         addView(hud.etiqueta("Lectura de Health Connect"))
         addView(hud.texto(
-            "Lo que hay ahora en Health Connect. «Leer ahora» solo lee; para guardarlo en V.I.T.A. usa «Sincronizar ahora».",
+            "Últimos 7 días tal como están en Health Connect. «Leer ahora» solo lee.",
             14f, Hud.DIM,
         ))
         addView(hud.fila("Última lectura", ultimaLectura ?: "—"))
