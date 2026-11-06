@@ -8,7 +8,7 @@ import java.time.ZonedDateTime
 /** Historial de las últimas ejecuciones automáticas (para comprobar que salta cada día). */
 object Historial {
     private const val K = "historial"
-    private const val MAX = 14
+    private const val MAX = 30
 
     enum class Paso { OK, FALLO, OMITIDA }
 

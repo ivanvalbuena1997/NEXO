@@ -9,11 +9,13 @@ import java.time.LocalDate
 import java.time.ZonedDateTime
 
 /**
- * Tarea diaria en segundo plano (la lanza la alarma):
+ * Pasada automática en segundo plano (la lanza la alarma, varias veces al día):
  * 1. sincroniza pasos y sueño de ayer y hoy;
- * 2. justo después, sube la copia de V.I.T.A. a Drive (si está activada y no se ha subido ya hoy).
- * Si alguna falla por un motivo pasajero, se reintenta todo (la sincronización es idempotente
- * y la copia no se repite si ya se subió hoy). Cada intento queda en el [Historial].
+ * 2. justo después, si está activada, sube la copia de V.I.T.A. a Drive:
+ *    - en la pasada de la última hora del día (con los datos más completos);
+ *    - o, como red de seguridad, en cualquier pasada si no hay copia correcta desde antes de ayer.
+ * Si algo falla por un motivo pasajero, se reintenta (la sincronización es idempotente y la copia
+ * ya subida en este trabajo no se repite). Cada intento queda en el [Historial].
  */
 class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
 
@@ -31,18 +33,23 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             if (!r.ok && r.reintentable) reintentar = true
         }
 
+        val ultimaDelDia = inputData.getBoolean(Programador.DATO_ULTIMA_DEL_DIA, true)
+        val copiaAtrasada = !copiaDesde(applicationContext, LocalDate.now(ZONA_ESPANA).minusDays(1))
+        val yaEnEsteTrabajo = runAttemptCount > 0 && copiaDesdeInicioTrabajo(applicationContext)
         var copia = Historial.Paso.OMITIDA
         var copiaTexto = when {
             !copiaDiariaActiva(applicationContext) -> "Copia diaria desactivada."
-            else -> "Ya había copia de hoy."
+            yaEnEsteTrabajo -> "Ya subida en un intento anterior."
+            else -> "Se sube en la última pasada del día."
         }
-        if (copiaDiariaActiva(applicationContext) && !copiaHechaHoy(applicationContext)) {
+        if (copiaDiariaActiva(applicationContext) && !yaEnEsteTrabajo && (ultimaDelDia || copiaAtrasada)) {
             val c = SubidaCopia(applicationContext).subir(SubidaCopia.Origen.AUTOMATICA)
             copia = if (c.ok) Historial.Paso.OK else Historial.Paso.FALLO
             copiaTexto = c.texto
             if (!c.ok && c.reintentable) reintentar = true
         }
 
+        if (runAttemptCount == 0) marcarInicioTrabajo(applicationContext, inicio)
         Historial.registrar(
             applicationContext,
             Historial.Entrada(inicio, sync, syncTexto, copia, copiaTexto, runAttemptCount),
@@ -61,9 +68,24 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             ctx.getSharedPreferences("nexo", Context.MODE_PRIVATE).edit().putBoolean(K_COPIA_DIARIA, activa).commit()
         }
 
-        fun copiaHechaHoy(ctx: Context): Boolean {
+        /** ¿Hay una copia correcta con fecha [desde] o posterior? */
+        fun copiaDesde(ctx: Context, desde: LocalDate): Boolean {
             val u = SubidaCopia.ultimo(ctx) ?: return false
-            return u.ok && u.cuando.withZoneSameInstant(ZONA_ESPANA).toLocalDate() == LocalDate.now(ZONA_ESPANA)
+            return u.ok && !u.cuando.withZoneSameInstant(ZONA_ESPANA).toLocalDate().isBefore(desde)
+        }
+
+        private const val K_INICIO = "trabajo_inicio"
+
+        private fun marcarInicioTrabajo(ctx: Context, t: ZonedDateTime) {
+            ctx.getSharedPreferences("nexo", Context.MODE_PRIVATE).edit().putString(K_INICIO, t.toString()).commit()
+        }
+
+        /** En un reintento: ¿ya se subió bien la copia desde el primer intento de este trabajo? */
+        private fun copiaDesdeInicioTrabajo(ctx: Context): Boolean {
+            val ini = ctx.getSharedPreferences("nexo", Context.MODE_PRIVATE).getString(K_INICIO, null)
+                ?.let { runCatching { ZonedDateTime.parse(it) }.getOrNull() } ?: return false
+            val u = SubidaCopia.ultimo(ctx) ?: return false
+            return u.ok && !u.cuando.isBefore(ini)
         }
     }
 }

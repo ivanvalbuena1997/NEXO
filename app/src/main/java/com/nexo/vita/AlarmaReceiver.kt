@@ -5,12 +5,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 
-/** Recibe la alarma diaria: encola la sincronización y programa la del día siguiente. */
+/** Recibe la alarma: encola la pasada y programa la siguiente hora de la lista. */
 class AlarmaReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Programador.ACCION_ALARMA) return
         if (!Programador.activa(context)) return
-        Programador.encolarSincronizacion(context)
+        // La alarma que salta es la que estaba guardada como «próxima».
+        val programada = Programador.proxima(context) ?: java.time.ZonedDateTime.now()
+        val ultima = Programador.esUltimaDelDia(programada, Programador.horas(context))
+        Programador.encolarSincronizacion(context, ultima)
         Programador.reprogramar(context)
     }
 }

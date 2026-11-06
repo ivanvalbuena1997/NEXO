@@ -491,19 +491,55 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun hhmm(h: java.time.LocalTime) = String.format(es, "%02d:%02d", h.hour, h.minute)
+
     private fun tarjetaProgramacion(): View = hud.tarjeta().apply {
-        addView(hud.etiqueta("Sincronización diaria"))
+        addView(hud.etiqueta("Sincronización automática"))
         val activa = Programador.activa(this@MainActivity)
-        val h = Programador.hora(this@MainActivity)
-        val m = Programador.minuto(this@MainActivity)
+        val horas = Programador.horas(this@MainActivity)
         addView(hud.fila("Estado", if (activa) "Activada" else "Desactivada", if (activa) Hud.OK else Hud.MUTE))
-        addView(hud.fila("Hora", String.format(es, "%02d:%02d", h, m)))
         if (activa) {
             Programador.proxima(this@MainActivity)?.let {
                 addView(hud.fila("Próxima", it.format(fmtSync).replaceFirstChar { c -> c.titlecase(es) }))
             }
         }
 
+        // Horas (hasta 6)
+        addView(hud.separador())
+        addView(hud.etiqueta("Horas · ${horas.size} de ${Programador.MAX_HORAS}", Hud.DIM))
+        horas.forEach { h ->
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, hud.dp(4), 0, hud.dp(4))
+                addView(hud.texto(hhmm(h), 20f, Hud.TEXT, hud.orbitron500, 0.06f).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                if (h == horas.last()) addView(hud.pildora("copia", Hud.ACC).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ).apply { marginEnd = hud.dp(10) }
+                })
+                if (horas.size > 1) addView(hud.texto("QUITAR", 12f, Hud.BAD, hud.rajdhani700, 0.1f).apply {
+                    setPadding(hud.dp(10), hud.dp(8), hud.dp(4), hud.dp(8))
+                    isClickable = true
+                    setOnClickListener {
+                        Programador.guardarHoras(this@MainActivity, horas - h); pintar()
+                    }
+                })
+            })
+        }
+        if (horas.size < Programador.MAX_HORAS) {
+            addView(hud.boton("Añadir hora", principal = false) { anadirHora(horas) })
+        }
+
+        addView(hud.boton(if (activa) "Desactivar" else "Activar") {
+            Programador.activar(this@MainActivity, !activa)
+            pintar()
+        })
+
+        // Permisos necesarios
+        addView(hud.separador())
         val exacta = Programador.puedeExacta(this@MainActivity)
         addView(hud.fila(
             "Alarmas y recordatorios",
@@ -512,42 +548,44 @@ class MainActivity : ComponentActivity() {
         ))
         val bg = LectorHealthConnect.PERMISO_SEGUNDO_PLANO in concedidos
         addView(hud.fila("Lectura en segundo plano", if (bg) "Concedida" else "Sin conceder", if (bg) Hud.OK else Hud.WARN))
-
         val avisos = buildList {
-            if (!exacta) add("Sin «Alarmas y recordatorios» la sincronización puede retrasarse.")
+            if (!exacta) add("Sin «Alarmas y recordatorios» las pasadas pueden retrasarse.")
             if (!bg) add("Sin el permiso de segundo plano, la sincronización automática fallará.")
         }
         avisos.forEach { addView(hud.texto(it, 13f, Hud.WARN)) }
-
-        addView(hud.boton(if (activa) "Desactivar" else "Activar") {
-            Programador.configurar(this@MainActivity, !activa, h, m)
-            pintar()
-        })
-        addView(hud.boton("Cambiar hora", principal = false) { elegirHora(activa, h, m) })
         if (!exacta && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             addView(hud.boton("Permitir alarmas y recordatorios", principal = false) {
                 abrir(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
             })
         }
+
+        // Copia
         addView(hud.separador())
         val diaria = SyncWorker.copiaDiariaActiva(this@MainActivity)
-        addView(hud.fila("Copia en Drive tras sincronizar", if (diaria) "Activada" else "Desactivada", if (diaria) Hud.OK else Hud.MUTE))
+        addView(hud.fila(
+            "Copia en Drive",
+            if (diaria) "En la pasada de las ${hhmm(horas.last())}" else "Desactivada",
+            if (diaria) Hud.OK else Hud.MUTE,
+        ))
         addView(hud.boton(if (diaria) "Desactivar copia diaria" else "Activar copia diaria", principal = false) {
             SyncWorker.activarCopiaDiaria(this@MainActivity, !diaria); pintar()
         })
         addView(hud.texto(
-            "Cada día a esa hora escribe ayer y hoy en V.I.T.A. (sin tocar lo corregido a mano) y, " +
-                "justo después, guarda la copia en la carpeta «V.I.T.A.» de Drive (una vez al día; " +
-                "deja las 8 más recientes).",
+            "En cada hora escribe ayer y hoy en V.I.T.A. (sin tocar lo corregido a mano). La copia en la " +
+                "carpeta «V.I.T.A.» de Drive se sube una vez al día, en la última pasada; si un día falla, " +
+                "la sube la siguiente pasada. Deja las 8 copias fechadas más recientes.",
             13f, Hud.MUTE,
         ).apply { setPadding(0, hud.dp(6), 0, 0) })
     }
 
-    private fun elegirHora(activa: Boolean, h: Int, m: Int) {
-        TimePickerDialog(this, { _, nuevaH, nuevoM ->
-            Programador.configurar(this, activa, nuevaH, nuevoM)
+    private fun anadirHora(horas: List<java.time.LocalTime>) {
+        val base = horas.lastOrNull()?.plusHours(1) ?: java.time.LocalTime.of(12, 0)
+        TimePickerDialog(this, { _, h, m ->
+            val nueva = java.time.LocalTime.of(h, m)
+            if (nueva in horas) Toast.makeText(this, "Esa hora ya está en la lista", Toast.LENGTH_SHORT).show()
+            else Programador.guardarHoras(this, horas + nueva)
             pintar()
-        }, h, m, true).show()
+        }, base.hour, base.minute, true).show()
     }
 
     private fun abrir(intent: Intent) {

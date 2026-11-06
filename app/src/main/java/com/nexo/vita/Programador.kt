@@ -12,54 +12,72 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
+import androidx.work.workDataOf
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 
 /**
- * Sincronización diaria: una alarma exacta a la hora elegida lanza un trabajo corto
- * ([SyncWorker]) y programa la del día siguiente.
+ * Sincronización automática a varias horas del día (hasta [MAX_HORAS]).
+ * Una única alarma exacta apunta siempre a la próxima hora de la lista; al saltar lanza un
+ * trabajo corto ([SyncWorker]) y programa la siguiente. La pasada de la última hora del día
+ * es la que sube la copia de V.I.T.A. a Drive.
  */
 object Programador {
     const val ACCION_ALARMA = "com.nexo.vita.SINCRONIZAR"
+    const val MAX_HORAS = 6
+    const val DATO_ULTIMA_DEL_DIA = "ultima_del_dia"
     private const val TRABAJO = "sync_diaria"
+    val HORAS_POR_DEFECTO = listOf(LocalTime.of(12, 0), LocalTime.of(17, 0), LocalTime.of(22, 0))
 
     private const val K_ACTIVA = "prog_activa"
-    private const val K_HORA = "prog_hora"
-    private const val K_MINUTO = "prog_minuto"
+    private const val K_HORAS = "prog_horas"
     private const val K_PROXIMA = "prog_proxima"
     private const val K_EXACTA = "prog_exacta"
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("nexo", Context.MODE_PRIVATE)
 
     fun activa(ctx: Context) = prefs(ctx).getBoolean(K_ACTIVA, false)
-    fun hora(ctx: Context) = prefs(ctx).getInt(K_HORA, 21)
-    fun minuto(ctx: Context) = prefs(ctx).getInt(K_MINUTO, 0)
+
+    /** Horas elegidas, ordenadas y sin repetir. */
+    fun horas(ctx: Context): List<LocalTime> =
+        prefs(ctx).getString(K_HORAS, null)?.let { leerHoras(it) }?.takeIf { it.isNotEmpty() } ?: HORAS_POR_DEFECTO
+
     fun proxima(ctx: Context): ZonedDateTime? =
         prefs(ctx).getString(K_PROXIMA, null)?.let { runCatching { ZonedDateTime.parse(it) }.getOrNull() }
-    /** Si la última alarma programada fue exacta (false = el sistema puede retrasarla). */
-    fun ultimaFueExacta(ctx: Context) = prefs(ctx).getBoolean(K_EXACTA, false)
 
     fun puedeExacta(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
 
-    /** Próxima vez que toca [hora]:[minuto] estrictamente después de [ahora]. */
-    fun siguiente(ahora: ZonedDateTime, hora: Int, minuto: Int): ZonedDateTime {
-        var fecha = ahora.toLocalDate()
-        var t = fecha.atTime(hora, minuto).atZone(ahora.zone)
-        if (!t.isAfter(ahora)) {
-            fecha = fecha.plusDays(1)
-            t = fecha.atTime(hora, minuto).atZone(ahora.zone)
-        }
-        return t
+    fun leerHoras(texto: String): List<LocalTime> =
+        texto.split(',').mapNotNull { runCatching { LocalTime.parse(it.trim()) }.getOrNull() }.distinct().sorted()
+
+    fun escribirHoras(horas: List<LocalTime>): String =
+        horas.distinct().sorted().joinToString(",") { "%02d:%02d".format(it.hour, it.minute) }
+
+    /** Próxima vez que toca alguna de las [horas], estrictamente después de [ahora]. */
+    fun siguiente(ahora: ZonedDateTime, horas: List<LocalTime>): ZonedDateTime =
+        horas.map { h ->
+            val hoy = ahora.toLocalDate().atTime(h).atZone(ahora.zone)
+            if (hoy.isAfter(ahora)) hoy else ahora.toLocalDate().plusDays(1).atTime(h).atZone(ahora.zone)
+        }.minOrNull() ?: error("Sin horas")
+
+    /** ¿La pasada de [cuando] es la de la última hora del día de la lista? */
+    fun esUltimaDelDia(cuando: ZonedDateTime, horas: List<LocalTime>): Boolean {
+        val ultima = horas.maxOrNull() ?: return true
+        return cuando.toLocalTime().withSecond(0).withNano(0) == ultima
     }
 
-    fun configurar(ctx: Context, activa: Boolean, hora: Int, minuto: Int) {
-        prefs(ctx).edit()
-            .putBoolean(K_ACTIVA, activa)
-            .putInt(K_HORA, hora)
-            .putInt(K_MINUTO, minuto)
-            .commit()
+    fun activar(ctx: Context, activa: Boolean) {
+        prefs(ctx).edit().putBoolean(K_ACTIVA, activa).commit()
+        reprogramar(ctx)
+    }
+
+    /** Guarda la lista (máximo [MAX_HORAS]) y reprograma. */
+    fun guardarHoras(ctx: Context, horas: List<LocalTime>) {
+        val limpias = horas.map { it.withSecond(0).withNano(0) }.distinct().sorted().take(MAX_HORAS)
+        prefs(ctx).edit().putString(K_HORAS, escribirHoras(limpias)).commit()
         reprogramar(ctx)
     }
 
@@ -73,7 +91,7 @@ object Programador {
             prefs(ctx).edit().remove(K_PROXIMA).commit()
             return
         }
-        val cuando = siguiente(ZonedDateTime.now(ZoneId.systemDefault()), hora(ctx), minuto(ctx))
+        val cuando = siguiente(ZonedDateTime.now(ZoneId.systemDefault()), horas(ctx))
         val ms = cuando.toInstant().toEpochMilli()
         val exacta = puedeExacta(ctx)
         if (exacta) {
@@ -88,10 +106,11 @@ object Programador {
             .commit()
     }
 
-    /** Encola la sincronización en segundo plano (necesita conexión). */
-    fun encolarSincronizacion(ctx: Context) {
+    /** Encola la pasada en segundo plano (necesita conexión). */
+    fun encolarSincronizacion(ctx: Context, ultimaDelDia: Boolean) {
         val peticion = OneTimeWorkRequestBuilder<SyncWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(workDataOf(DATO_ULTIMA_DEL_DIA to ultimaDelDia))
             .apply {
                 // En Android 12+ un trabajo urgente no necesita servicio en primer plano.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
